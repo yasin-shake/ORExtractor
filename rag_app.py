@@ -266,25 +266,18 @@ def _save_manifest(chroma_dir: Path, manifest: dict) -> None:
     )
 
 
-_mineru_logs_suppressed: bool = False
+_parser_logs_suppressed: bool = False
 
 
-def _suppress_mineru_logs() -> None:
-    global _mineru_logs_suppressed
-    if _mineru_logs_suppressed:
+def _suppress_parser_logs() -> None:
+    global _parser_logs_suppressed
+    if _parser_logs_suppressed:
         return
     import logging
-    for _noisy in ("loguru", "tensorflow", "mineru", "ppocr", "paddle",
-                   "huggingface_hub", "filelock"):
+    for _noisy in ("marker", "surya", "texify", "transformers", "datasets",
+                   "PIL", "huggingface_hub", "filelock"):
         logging.getLogger(_noisy).setLevel(logging.WARNING)
-    try:
-        from loguru import logger as _lu
-        _lu.remove()
-        import sys as _sys
-        _lu.add(_sys.stderr, level="WARNING")
-    except Exception:
-        pass
-    _mineru_logs_suppressed = True
+    _parser_logs_suppressed = True
 
 
 def _chunk_ocr_text(text: str, chunk_size: int) -> List[str]:
@@ -307,65 +300,88 @@ def _chunk_ocr_text(text: str, chunk_size: int) -> List[str]:
     return [c for c in out if c.strip()]
 
 
+_marker_converter = None
+
+
+def _get_marker_converter():
+    """Build (once) and cache the marker-pdf converter configured for chunk output.
+
+    The chunk renderer flattens every page into a list of top-level blocks, each
+    carrying its ``block_type``, fully-assembled ``html`` and 0-indexed ``page``.
+    """
+    global _marker_converter
+    if _marker_converter is not None:
+        return _marker_converter
+
+    from marker.converters.pdf import PdfConverter
+    from marker.models import create_model_dict
+    from marker.config.parser import ConfigParser
+
+    config_parser = ConfigParser({
+        "output_format": "chunks",
+        "disable_image_extraction": True,
+    })
+    _marker_converter = PdfConverter(
+        config=config_parser.generate_config_dict(),
+        artifact_dict=create_model_dict(),
+        processor_list=config_parser.get_processors(),
+        renderer=config_parser.get_renderer(),
+    )
+    return _marker_converter
+
+
+def _html_to_text(raw_html: str) -> str:
+    """Flatten a marker HTML block into plain text suitable for chunking."""
+    import html as _htmllib
+
+    text = re.sub(r"(?is)<\s*br\s*/?>", "\n", raw_html)
+    text = re.sub(r"(?is)</\s*(p|div|li|h[1-6]|tr|table)\s*>", "\n", text)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = _htmllib.unescape(text)
+    text = re.sub(r"[ \t]+", " ", text)
+    return text.strip()
+
+
 def parse_pdf_to_documents(
     pdf_path: Path,
     chunk_size: int,
 ) -> List[Document]:
-    _suppress_mineru_logs()
-    tqdm.write("  Converting with MinerU …")
+    _suppress_parser_logs()
+    tqdm.write("  Converting with marker-pdf …")
     try:
-        from mineru.backend.pipeline.pipeline_analyze import doc_analyze_streaming
-        from mineru.backend.pipeline.pipeline_middle_json_mkcontent import union_make
-        from mineru.cli.client_side_output import finalize_client_side_middle_json
-        from mineru.data.data_reader_writer.dummy import DummyDataWriter
-        from mineru.utils.enum_class import MakeMode
-
-        pdf_bytes = pdf_path.read_bytes()
-        captured: list = []
-
-        def _on_doc_ready(doc_index, model_list, middle_json, ocr_enable):
-            captured.append(middle_json)
-
-        doc_analyze_streaming(
-            pdf_bytes_list=[pdf_bytes],
-            image_writer_list=[DummyDataWriter()],
-            lang_list=["en"],
-            on_doc_ready=_on_doc_ready,
-            parse_method="auto",
-            formula_enable=False,
-            table_enable=True,
-        )
-
-        if not captured:
-            tqdm.write("  MinerU produced no output")
-            return []
-
-        middle_json = captured[0]
-        finalize_client_side_middle_json(middle_json)
-        content_list = union_make(middle_json.get("pdf_info", []), MakeMode.CONTENT_LIST, "")
-
+        converter = _get_marker_converter()
+        rendered = converter(str(pdf_path))
+        blocks = list(getattr(rendered, "blocks", None) or [])
     except Exception as exc:
-        tqdm.write(f"  MinerU conversion failed: {exc}")
+        tqdm.write(f"  marker-pdf conversion failed: {exc}")
+        return []
+
+    if not blocks:
+        tqdm.write("  marker-pdf produced no output")
         return []
 
     docs: List[Document] = []
     page_texts: dict[int, List[str]] = {}
     table_items: List[tuple] = []
 
-    _SKIP_TYPES = {"image", "equation", "chart", "page_number", "header", "footer"}
+    _SKIP_TYPES = {
+        "Picture", "PictureGroup", "Figure", "FigureGroup", "Equation",
+        "PageHeader", "PageFooter", "Handwriting",
+    }
+    _TABLE_TYPES = {"Table", "TableGroup", "TableOfContents", "Form"}
 
-    for item in content_list:
-        page_no = (item.get("page_idx") or 0) + 1  # MinerU is 0-indexed
-        item_type = str(item.get("type", ""))
-        if item_type in _SKIP_TYPES:
+    for block in blocks:
+        page_no = (getattr(block, "page", 0) or 0) + 1  # marker is 0-indexed
+        block_type = str(getattr(block, "block_type", ""))
+        if block_type in _SKIP_TYPES:
             continue
-        if item_type == "table":
-            html = (item.get("table_body") or "").strip()
-            if html:
-                caption = " ".join(item.get("table_caption") or [])
-                table_items.append((f"{caption}\n{html}".strip(), page_no))
+        raw_html = (getattr(block, "html", "") or "").strip()
+        if not raw_html:
+            continue
+        if block_type in _TABLE_TYPES:
+            table_items.append((raw_html, page_no))
         else:
-            text = (item.get("text") or "").strip()
+            text = _html_to_text(raw_html)
             if text:
                 page_texts.setdefault(page_no, []).append(text)
 
@@ -667,7 +683,7 @@ def save_extraction(settings: Settings, report) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "NI 43-101 RAG + structured extraction with Unstructured + OpenAI embeddings "
+            "NI 43-101 RAG + structured extraction with marker-pdf + OpenAI embeddings "
             "+ Claude (Anthropic) + Chroma."
         )
     )

@@ -19,7 +19,7 @@ python-multipart    # multipart file uploads
 streamlit
 
 # ── PDF parsing ───────────────────────────────────────────────────────────────
-mineru              # layout-aware parsing, OCR, and table detection (MinerU 3.x)
+marker-pdf          # layout-aware parsing, OCR (Surya), and table detection
 PyMuPDF             # fitz — PDF page rendering for the Streamlit source viewer
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
