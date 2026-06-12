@@ -1,0 +1,29 @@
+# ── Vector store & embeddings ─────────────────────────────────────────────────
+chromadb
+openai
+langchain-core
+langchain-openai
+langchain-chroma
+
+# ── LLM (Claude via AWS Bedrock) ──────────────────────────────────────────────
+langchain-aws
+boto3
+
+# ── API server ────────────────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+anyio               # used directly in api.py (to_thread.run_sync)
+python-multipart    # multipart file uploads
+
+# ── Streamlit UI ──────────────────────────────────────────────────────────────
+streamlit
+
+# ── PDF parsing ───────────────────────────────────────────────────────────────
+mineru              # layout-aware parsing, OCR, and table detection (MinerU 3.x)
+PyMuPDF             # fitz — PDF page rendering for the Streamlit source viewer
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+tqdm
+python-dotenv
+requests
+pydantic>=2

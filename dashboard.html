@@ -1,0 +1,1645 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1440">
+<title>NI 43-101 Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+/* ── Theme tokens ─────────────────────────────────────────────────── */
+:root[data-theme="light"] {
+  --bg:              #F4F6F9;
+  --surface:         #FFFFFF;
+  --surface2:        #F8F9FB;
+  --sidebar:         #FFFFFF;
+  --border:          #E8EAED;
+  --text:            #1A1D23;
+  --text2:           #4B5563;
+  --muted:           #9CA3AF;
+  --accent:          #10B981;
+  --accent-dim:      rgba(16,185,129,0.10);
+  --accent-bdr:      rgba(16,185,129,0.25);
+  --shadow:          0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md:       0 4px 8px rgba(0,0,0,0.07);
+  --nav-active-bg:   #F0FDF4;
+  --nav-active-txt:  #059669;
+  --nav-hover:       #F9FAFB;
+  --red:             #EF4444;
+  --yellow:          #F59E0B;
+  --blue:            #3B82F6;
+  --bar1:            #10B981;
+  --bar2:            #3B82F6;
+  --bar3:            #9CA3AF;
+}
+:root[data-theme="dark"] {
+  --bg:              #0F1117;
+  --surface:         #1A1D27;
+  --surface2:        #1E2130;
+  --sidebar:         #13151E;
+  --border:          rgba(255,255,255,0.07);
+  --text:            #E8E4D8;
+  --text2:           #9CA3AF;
+  --muted:           #6B7280;
+  --accent:          #10B981;
+  --accent-dim:      rgba(16,185,129,0.12);
+  --accent-bdr:      rgba(16,185,129,0.30);
+  --shadow:          0 1px 3px rgba(0,0,0,0.40);
+  --shadow-md:       0 4px 8px rgba(0,0,0,0.35);
+  --nav-active-bg:   rgba(16,185,129,0.12);
+  --nav-active-txt:  #34D399;
+  --nav-hover:       rgba(255,255,255,0.04);
+  --red:             #F87171;
+  --yellow:          #FBBF24;
+  --blue:            #60A5FA;
+  --bar1:            #10B981;
+  --bar2:            #60A5FA;
+  --bar3:            #6B7280;
+}
+
+/* ── Reset ────────────────────────────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:'IBM Plex Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;
+  min-height:100vh;transition:background .25s,color .25s;
+}
+
+/* ── Layout ───────────────────────────────────────────────────────── */
+.app{display:flex;min-height:100vh}
+.sidebar{
+  width:220px;flex-shrink:0;background:var(--sidebar);
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  position:fixed;top:0;left:0;bottom:0;z-index:50;
+  transition:background .25s,border-color .25s;
+}
+.main{margin-left:220px;flex:1;display:flex;flex-direction:column}
+
+/* ── Sidebar pieces ───────────────────────────────────────────────── */
+.sb-logo{
+  display:flex;align-items:center;gap:10px;
+  padding:18px 16px 14px;border-bottom:1px solid var(--border);
+}
+.sb-logo-icon{
+  width:32px;height:32px;border-radius:8px;
+  background:var(--accent);display:flex;align-items:center;justify-content:center;
+  font-size:16px;flex-shrink:0;
+}
+.sb-logo-name{font-size:15px;font-weight:700;color:var(--text);letter-spacing:-.01em}
+.sb-logo-sub{font-size:9px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase}
+
+.sb-search{padding:12px 10px}
+.sb-search-box{
+  display:flex;align-items:center;gap:7px;
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:8px;padding:6px 10px;
+}
+.sb-search-box input{
+  background:none;border:none;outline:none;
+  color:var(--text);font-size:12px;font-family:inherit;width:100%;
+}
+.sb-search-box input::placeholder{color:var(--muted)}
+
+.sb-section{
+  padding:6px 16px 2px;
+  font-size:10px;font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--muted);
+}
+.nav-item{
+  display:flex;align-items:center;gap:9px;
+  padding:8px 12px;margin:1px 6px;border-radius:8px;
+  cursor:pointer;font-size:13px;font-weight:500;
+  color:var(--text2);text-decoration:none;
+  transition:background .12s,color .12s;user-select:none;
+}
+.nav-item:hover{background:var(--nav-hover);color:var(--text)}
+.nav-item.active{background:var(--nav-active-bg);color:var(--nav-active-txt)}
+.nav-icon{width:16px;height:16px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;opacity:.7}
+.nav-item.active .nav-icon{opacity:1}
+.sb-sep{height:1px;background:var(--border);margin:6px 10px}
+
+.sb-bottom{margin-top:auto;padding:10px 10px;border-top:1px solid var(--border)}
+.theme-toggle{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:8px 10px;border-radius:8px;cursor:pointer;
+  font-size:13px;font-weight:500;color:var(--text2);
+  transition:background .12s;user-select:none;
+}
+.theme-toggle:hover{background:var(--nav-hover)}
+.track{
+  width:36px;height:20px;background:var(--border);border-radius:10px;
+  position:relative;transition:background .2s;flex-shrink:0;
+}
+.track.on{background:var(--accent)}
+.thumb{
+  width:16px;height:16px;background:#fff;border-radius:50%;
+  position:absolute;top:2px;left:2px;
+  transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.3);
+}
+.track.on .thumb{transform:translateX(16px)}
+
+/* ── Topbar ───────────────────────────────────────────────────────── */
+.topbar{
+  background:var(--surface);border-bottom:1px solid var(--border);
+  padding:0 24px;height:58px;display:flex;align-items:center;
+  justify-content:space-between;position:sticky;top:0;z-index:40;
+  transition:background .25s;
+}
+.topbar-title{font-size:18px;font-weight:700;letter-spacing:-.02em;color:var(--text)}
+.topbar-right{display:flex;align-items:center;gap:10px}
+
+#reportSelect{
+  background:var(--surface2);border:1px solid var(--border);
+  color:var(--text);font-family:inherit;font-size:13px;font-weight:500;
+  padding:7px 11px;border-radius:8px;cursor:pointer;outline:none;
+  max-width:300px;transition:border-color .15s;
+}
+#reportSelect:focus{border-color:var(--accent)}
+#reportSelect option{background:var(--surface)}
+
+#apiKeyInput{
+  background:var(--surface2);border:1px solid var(--border);
+  color:var(--muted);font-family:inherit;font-size:12px;
+  padding:7px 11px;border-radius:8px;width:150px;outline:none;
+}
+.btn{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:7px 14px;border-radius:8px;
+  font-family:inherit;font-size:13px;font-weight:500;
+  cursor:pointer;border:1px solid var(--border);
+  background:var(--surface);color:var(--text2);
+  transition:all .12s;
+}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn-primary:hover{background:#059669;border-color:#059669;color:#fff}
+.btn-secondary{background:transparent;border-color:var(--border);color:var(--text-muted)}
+.btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
+.btn-secondary:disabled{opacity:.5;cursor:not-allowed;pointer-events:none}
+
+/* ── Content ──────────────────────────────────────────────────────── */
+.content{padding:24px;flex:1}
+.page{display:none}
+.page.active{display:block}
+
+/* ── Welcome ──────────────────────────────────────────────────────── */
+.welcome{margin-bottom:20px}
+.welcome-title{font-size:21px;font-weight:700;letter-spacing:-.02em;margin-bottom:3px}
+.welcome-sub{font-size:13px;color:var(--text2)}
+.welcome-sub strong{color:var(--accent);font-weight:600}
+
+/* ── KPI grid ─────────────────────────────────────────────────────── */
+.kpi-grid{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:14px;margin-bottom:18px;
+}
+@media(min-width:1100px){.kpi-grid{grid-template-columns:repeat(6,1fr)}}
+.kpi-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;padding:16px 18px;box-shadow:var(--shadow);
+  transition:box-shadow .2s,transform .2s;position:relative;overflow:hidden;
+}
+.kpi-card:hover{box-shadow:var(--shadow-md);transform:translateY(-1px)}
+.kpi-card::after{
+  content:'';position:absolute;bottom:0;left:0;right:0;height:3px;
+  background:var(--accent);opacity:0;transition:opacity .2s;
+}
+.kpi-card:hover::after{opacity:1}
+.kpi-icon{
+  width:30px;height:30px;border-radius:7px;
+  background:var(--accent-dim);display:flex;align-items:center;
+  justify-content:center;font-size:15px;margin-bottom:10px;
+}
+.kpi-label{
+  font-size:10px;font-weight:600;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.07em;margin-bottom:3px;
+}
+.kpi-value{
+  font-size:22px;font-weight:700;color:var(--text);
+  letter-spacing:-.02em;line-height:1.1;margin-bottom:3px;
+}
+.kpi-value.dim{color:var(--muted);font-size:17px;font-weight:500}
+.kpi-sub{font-size:11px;color:var(--text2)}
+
+/* ── Mid grid ─────────────────────────────────────────────────────── */
+.mid-grid{display:grid;grid-template-columns:1fr 360px;gap:16px;margin-bottom:18px}
+
+/* ── Card ─────────────────────────────────────────────────────────── */
+.card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;box-shadow:var(--shadow);overflow:hidden;
+}
+.card-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 20px;border-bottom:1px solid var(--border);
+}
+.card-title{
+  display:flex;align-items:center;gap:9px;
+  font-size:14px;font-weight:600;color:var(--text);
+}
+.card-icon{
+  width:28px;height:28px;border-radius:6px;
+  background:var(--accent-dim);display:flex;align-items:center;
+  justify-content:center;font-size:14px;color:var(--accent);
+}
+.card-badge{
+  font-size:11px;font-weight:500;color:var(--muted);
+  background:var(--surface2);border:1px solid var(--border);
+  padding:3px 10px;border-radius:20px;
+}
+.card-body{padding:18px 20px}
+
+/* ── Resource bar chart ───────────────────────────────────────────── */
+.res-chart{display:flex;flex-direction:column;gap:14px}
+.rc-row{display:flex;flex-direction:column;gap:5px}
+.rc-labels{display:flex;justify-content:space-between;font-size:12px}
+.rc-cat{font-weight:600;color:var(--text)}
+.rc-val{color:var(--text2)}
+.rc-track{
+  height:26px;background:var(--surface2);border-radius:5px;
+  overflow:hidden;border:1px solid var(--border);
+}
+.rc-fill{
+  height:100%;border-radius:5px;
+  display:flex;align-items:center;padding:0 8px;
+  font-size:11px;font-weight:600;color:#fff;white-space:nowrap;
+  transition:width .8s cubic-bezier(.4,0,.2,1);
+}
+.rc-fill.measured  {background:var(--bar1)}
+.rc-fill.indicated {background:var(--bar2)}
+.rc-fill.proven    {background:var(--bar1)}
+.rc-fill.probable  {background:var(--bar2)}
+.rc-fill.inferred  {background:var(--bar3)}
+
+/* ── Econ snapshot ────────────────────────────────────────────────── */
+.econ-big{text-align:center;padding:14px 0 18px;border-bottom:1px solid var(--border);margin-bottom:14px}
+.econ-big-lbl{font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:3px}
+.econ-big-val{font-size:34px;font-weight:700;color:var(--text);letter-spacing:-.03em}
+.econ-big-val.dim{color:var(--muted);font-size:22px}
+.econ-big-sub{font-size:12px;color:var(--accent);font-weight:500;margin-top:2px}
+.econ-rows{display:flex;flex-direction:column}
+.econ-row{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:7px 0;border-bottom:1px solid var(--border);font-size:13px;
+}
+.econ-row:last-child{border-bottom:none}
+.econ-lbl{color:var(--text2)}
+.econ-val{font-weight:600;color:var(--text)}
+.tag-group{display:flex;flex-wrap:wrap;gap:5px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.tag{
+  font-size:11px;font-weight:500;padding:3px 9px;border-radius:20px;
+  background:var(--accent-dim);color:var(--accent);border:1px solid var(--accent-bdr);
+}
+
+/* ── Table ────────────────────────────────────────────────────────── */
+.table-section{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;box-shadow:var(--shadow);overflow:hidden;
+}
+.table-toolbar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 20px;border-bottom:1px solid var(--border);gap:10px;
+}
+.table-title{font-size:14px;font-weight:600;color:var(--text)}
+.table-right{display:flex;align-items:center;gap:8px}
+.search-box{
+  display:flex;align-items:center;gap:6px;
+  background:var(--surface2);border:1px solid var(--border);
+  border-radius:8px;padding:5px 11px;
+}
+.search-box input{
+  background:none;border:none;outline:none;
+  font-size:12px;color:var(--text);font-family:inherit;width:150px;
+}
+.search-box input::placeholder{color:var(--muted)}
+.table-wrap{overflow-x:auto}
+table.dt{width:100%;border-collapse:collapse}
+table.dt th{
+  font-size:11px;font-weight:600;color:var(--muted);
+  text-transform:uppercase;letter-spacing:.06em;
+  padding:10px 16px;text-align:left;background:var(--surface2);
+  border-bottom:1px solid var(--border);white-space:nowrap;
+}
+table.dt th.r{text-align:right}
+table.dt td{
+  padding:10px 16px;font-size:13px;
+  border-bottom:1px solid var(--border);color:var(--text);
+}
+table.dt td.r{text-align:right;font-variant-numeric:tabular-nums}
+table.dt tr:last-child td{border-bottom:none}
+table.dt tbody tr:hover td{background:var(--surface2)}
+table.dt tr.cat-row td{
+  font-size:10px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.12em;padding:6px 16px 4px;
+  background:var(--surface2);color:var(--muted);border-bottom:none;
+}
+table.dt tr.total-row td{
+  font-weight:700;background:rgba(16,185,129,.05);
+  color:var(--accent);border-top:1px solid var(--border);
+}
+.pill{
+  display:inline-flex;align-items:center;
+  padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600;
+}
+.pill-m  {background:rgba(16,185,129,.12);color:#059669}
+.pill-i  {background:rgba(59,130,246,.12); color:#2563EB}
+.pill-pn {background:rgba(16,185,129,.12);color:#059669}
+.pill-pb {background:rgba(59,130,246,.12); color:#2563EB}
+.pill-inf{background:rgba(156,163,175,.18);color:var(--muted)}
+.footnote{font-size:11px;color:var(--muted);padding:10px 20px;border-top:1px solid var(--border)}
+
+/* ── Section pages ────────────────────────────────────────────────── */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px}
+.g1{margin-bottom:16px}
+.kv-list{display:flex;flex-direction:column}
+.kv-item{
+  display:flex;justify-content:space-between;align-items:flex-start;
+  padding:9px 0;border-bottom:1px solid var(--border);
+  gap:14px;font-size:13px;
+}
+.kv-item:last-child{border-bottom:none}
+.kv-lbl{color:var(--text2);flex-shrink:0;min-width:110px}
+.kv-val{font-weight:500;color:var(--text);text-align:right}
+.metric-box{padding:18px 16px;text-align:center}
+.metric-lbl{font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px}
+.metric-val{font-size:28px;font-weight:700;color:var(--text);letter-spacing:-.02em;line-height:1}
+.metric-val.dim{color:var(--muted);font-size:18px;font-weight:500}
+.metric-sub{font-size:11px;color:var(--text2);margin-top:4px}
+.geo-row{padding:10px 0;border-bottom:1px solid var(--border)}
+.geo-row:last-child{border-bottom:none}
+.geo-lbl{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.13em;color:var(--accent);margin-bottom:3px}
+.geo-val{font-size:13px;color:var(--text);line-height:1.5}
+.intercept-item{
+  padding:8px 12px;background:var(--surface2);border-radius:6px;
+  border-left:2px solid var(--accent);font-size:12px;color:var(--text);
+  line-height:1.4;margin-bottom:4px;
+}
+.qp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+.qp-card{
+  padding:14px 16px;background:var(--surface2);
+  border:1px solid var(--border);border-radius:10px;
+  border-left:3px solid var(--accent);
+}
+.qp-name{font-size:13px;font-weight:600;color:var(--text);margin-bottom:2px}
+.qp-cred{font-size:11px;color:var(--accent);font-weight:500;margin-bottom:5px}
+.qp-resp{font-size:12px;color:var(--text2);line-height:1.5}
+.summary-text{font-size:14px;line-height:1.8;color:var(--text2)}
+.empty-pg{text-align:center;padding:60px 20px;color:var(--muted);font-size:13px}
+.empty-pg-icon{font-size:2.5rem;margin-bottom:12px}
+.null{color:var(--muted);opacity:.4}
+
+/* ── Monospace numbers ────────────────────────────────────────────── */
+.kpi-value,.metric-val,.econ-big-val,.econ-val,
+table.dt td.r,.rc-val{
+  font-family:'IBM Plex Mono','Fira Code',monospace;
+}
+.kpi-value{letter-spacing:-.03em}
+
+/* ── Interaction polish ───────────────────────────────────────────── */
+.nav-item{cursor:pointer}
+.nav-item:focus-visible,.btn:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px;border-radius:8px;
+}
+.btn:active,.btn-primary:active{transform:scale(.97)}
+.chat-send-btn:active{transform:scale(.95)}
+
+/* ── SVG icon alignment ───────────────────────────────────────────── */
+.nav-icon{display:flex;align-items:center;justify-content:center}
+.nav-icon svg,.card-icon svg,.kpi-icon svg,.sb-logo-icon svg{display:block}
+
+/* ── Reduced-motion ───────────────────────────────────────────────── */
+@media(prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms!important;transition-duration:.01ms!important}
+}
+
+/* ── Msg bar ──────────────────────────────────────────────────────── */
+#msgBar{padding:9px 24px;font-size:12px;display:none}
+#msgBar.error{background:rgba(239,68,68,.08);color:var(--red);border-bottom:1px solid rgba(239,68,68,.2)}
+#msgBar.info {background:var(--accent-dim);color:var(--accent);border-bottom:1px solid var(--accent-bdr)}
+
+/* ── Chat ─────────────────────────────────────────────────────── */
+#page-chat.active{display:flex;flex-direction:column}
+.chat-wrap{display:flex;flex-direction:column;height:calc(100vh - 116px);min-height:400px}
+.chat-messages{flex:1;overflow-y:auto;padding:4px 0 16px;display:flex;flex-direction:column;gap:14px}
+.chat-msg{display:flex;gap:10px;max-width:82%}
+.chat-msg.user{align-self:flex-end;flex-direction:row-reverse}
+.chat-msg.assistant{align-self:flex-start}
+.chat-bubble{padding:11px 15px;border-radius:12px;font-size:13.5px;line-height:1.65;word-break:break-word}
+.chat-msg.user .chat-bubble{background:var(--accent);color:#fff;border-bottom-right-radius:4px}
+.chat-msg.assistant .chat-bubble{background:var(--surface);border:1px solid var(--border);border-bottom-left-radius:4px;color:var(--text)}
+.chat-avatar{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;margin-top:2px}
+.chat-msg.user .chat-avatar{background:var(--accent-dim)}
+.chat-msg.assistant .chat-avatar{background:var(--surface2);border:1px solid var(--border)}
+.chat-sources{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
+.chat-source-tag{font-size:11px;background:var(--accent-dim);border:1px solid var(--accent-bdr);color:var(--accent);padding:2px 8px;border-radius:4px;font-family:monospace;cursor:default}
+.chat-input-area{padding:14px 0 0;border-top:1px solid var(--border);display:flex;gap:10px;align-items:flex-end;flex-shrink:0}
+.chat-input-wrap{flex:1;display:flex;flex-direction:column;gap:7px}
+.chat-filter-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2)}
+.chat-filter-row select{font-size:12px;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:6px;outline:none;cursor:pointer;max-width:260px}
+.chat-filter-row select:focus{border-color:var(--accent)}
+#chatInput{width:100%;background:var(--surface);border:1.5px solid var(--border);color:var(--text);border-radius:10px;padding:10px 14px;font-size:13.5px;font-family:inherit;resize:none;outline:none;transition:border-color .15s;min-height:44px;max-height:130px;overflow-y:auto}
+#chatInput:focus{border-color:var(--accent)}
+.chat-send-btn{background:var(--accent);border:none;color:#fff;width:44px;height:44px;border-radius:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background .15s}
+.chat-send-btn:hover{background:#059669}
+.chat-send-btn:disabled{opacity:.5;cursor:not-allowed}
+.chat-typing{display:flex;gap:5px;padding:6px 4px;align-items:center}
+.chat-typing span{width:6px;height:6px;background:var(--muted);border-radius:50%;animation:chatbounce 1.4s infinite ease-in-out}
+.chat-typing span:nth-child(2){animation-delay:.2s}
+.chat-typing span:nth-child(3){animation-delay:.4s}
+@keyframes chatbounce{0%,80%,100%{transform:scale(.75);opacity:.5}40%{transform:scale(1.1);opacity:1}}
+.chat-welcome{text-align:center;padding:40px 20px 20px;color:var(--text2)}
+.chat-welcome-icon{font-size:2.4rem;margin-bottom:12px}
+.chat-welcome-title{font-size:1.05rem;font-weight:600;color:var(--text);margin-bottom:6px}
+.chat-welcome-sub{font-size:13px}
+.chat-suggestions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:18px}
+.chat-suggestion{background:var(--surface);border:1px solid var(--border);color:var(--text2);padding:8px 14px;border-radius:20px;font-size:13px;cursor:pointer;transition:all .15s;font-family:inherit}
+.chat-suggestion:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-dim)}
+
+/* ── Map page ────────────────────────────────────────────────────── */
+#page-map.active{display:flex;flex-direction:column;gap:14px}
+.map-filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.map-filters select{padding:6px 10px;border:1px solid var(--border);border-radius:8px;
+  background:var(--surface);color:var(--text);font-family:inherit;font-size:13px;cursor:pointer}
+#mapContainer{flex:1;min-height:520px;border-radius:12px;overflow:hidden;
+  border:1px solid var(--border);background:var(--surface2)}
+.map-legend{display:flex;gap:16px;flex-wrap:wrap;padding:10px 0 0;font-size:12px;color:var(--text2)}
+.legend-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px;vertical-align:middle}
+/* Leaflet popup theme */
+.leaflet-popup-content-wrapper{background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:10px;box-shadow:var(--shadow-md)}
+.leaflet-popup-tip{background:var(--surface)}
+.map-popup-title{font-weight:600;font-size:13.5px;margin-bottom:4px}
+.map-popup-row{font-size:12px;color:var(--text2);line-height:1.7}
+.map-popup-row strong{color:var(--text)}
+.map-popup-link{font-size:12px;color:var(--accent);cursor:pointer;text-decoration:underline;margin-top:6px;display:block}
+
+/* ── Portfolio screener ──────────────────────────────────────────── */
+#page-portfolio.active{display:block}
+.portfolio-filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center;
+  padding:14px 0 10px;border-bottom:1px solid var(--border);margin-bottom:14px}
+.portfolio-filters select,.portfolio-filters input[type=text]{
+  padding:6px 10px;border:1px solid var(--border);border-radius:8px;
+  background:var(--surface);color:var(--text);font-family:inherit;font-size:13px}
+.portfolio-filters input[type=text]{min-width:180px}
+.pf-count{font-size:12px;color:var(--muted);margin-left:auto}
+.stage-chip{display:inline-block;font-size:11px;font-weight:500;padding:2px 8px;
+  border-radius:20px;white-space:nowrap}
+.stage-chip.exploration{background:#EEF2FF;color:#4F46E5}
+.stage-chip.pea{background:#FFF7ED;color:#C2410C}
+.stage-chip.prefeasibility{background:#FEF9C3;color:#92400E}
+.stage-chip.feasibility{background:#DCFCE7;color:#166534}
+.stage-chip.operating{background:#D1FAE5;color:#065F46}
+.stage-chip.construction{background:#CFFAFE;color:#155E75}
+.stage-chip.care{background:#F3F4F6;color:#6B7280}
+.stage-chip.default{background:var(--surface2);color:var(--text2)}
+[data-theme="dark"] .stage-chip.exploration{background:rgba(79,70,229,.18);color:#A5B4FC}
+[data-theme="dark"] .stage-chip.pea{background:rgba(194,65,12,.18);color:#FDBA74}
+[data-theme="dark"] .stage-chip.prefeasibility{background:rgba(146,64,14,.18);color:#FDE68A}
+[data-theme="dark"] .stage-chip.feasibility{background:rgba(22,101,52,.18);color:#6EE7B7}
+[data-theme="dark"] .stage-chip.operating{background:rgba(6,95,70,.22);color:#34D399}
+[data-theme="dark"] .stage-chip.construction{background:rgba(21,94,117,.18);color:#67E8F9}
+[data-theme="dark"] .stage-chip.care{background:rgba(107,114,128,.18);color:#9CA3AF}
+.comm-chip{display:inline-block;font-size:11px;padding:2px 7px;border-radius:4px;
+  background:var(--accent-dim);color:var(--accent);border:1px solid var(--accent-bdr);
+  margin:1px;white-space:nowrap}
+table.pf-table td,.pf-table th{padding:8px 10px}
+.pf-table tr{cursor:pointer}
+.pf-table tr:hover td{background:var(--nav-hover)}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ── Sidebar ───────────────────────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-logo-icon">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+        <polyline points="2 17 12 22 22 17"/>
+        <polyline points="2 12 12 17 22 12"/>
+      </svg>
+    </div>
+    <div>
+      <div class="sb-logo-name">NI 43-101</div>
+      <div class="sb-logo-sub">AI Extraction</div>
+    </div>
+  </div>
+
+  <div class="sb-search">
+    <div class="sb-search-box">
+      <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 20 20"><circle cx="9" cy="9" r="6"/><path d="M15 15l3 3"/></svg>
+      <input type="text" placeholder="Search here…">
+    </div>
+  </div>
+
+  <div class="sb-section">Main Menu</div>
+  <a class="nav-item active" onclick="navTo('overview',this)">
+    <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span>
+    Dashboard
+  </a>
+  <a class="nav-item" onclick="navTo('portfolio',this)">
+    <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg></span>
+    Portfolio
+  </a>
+  <a class="nav-item" onclick="navTo('resources',this)">
+    <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>
+    Resources & Reserves
+  </a>
+  <a class="nav-item" onclick="navTo('economics',this)">
+    <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg></span>
+    Economics
+  </a>
+  <a class="nav-item" onclick="navTo('property',this)">
+    <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg></span>
+    Property & Geology
+  </a>
+  <a class="nav-item" onclick="navTo('exploration',this)">
+    <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg></span>
+    Exploration & QPs
+  </a>
+  <a class="nav-item" onclick="navTo('map',this)">
+    <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg></span>
+    Map
+  </a>
+  <a class="nav-item" onclick="navTo('chat',this)">
+    <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+    Chat
+  </a>
+
+  <div class="sb-sep"></div>
+  <div class="sb-section">Settings</div>
+  <a class="nav-item" onclick="loadReports()">
+    <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></span>
+    Refresh Data
+  </a>
+
+  <div class="sb-bottom">
+    <div class="theme-toggle" onclick="toggleTheme()">
+      <span style="display:flex;align-items:center;gap:8px">
+        <span id="themeIcon">🌙</span>
+        <span id="themeLabel">Dark Mode</span>
+      </span>
+      <div class="track" id="themeTrack"><div class="thumb"></div></div>
+    </div>
+  </div>
+</aside>
+
+<!-- ── Main ──────────────────────────────────────────────────────────── -->
+<div class="main">
+  <header class="topbar">
+    <div class="topbar-title" id="pageTitle">Dashboard</div>
+    <div class="topbar-right">
+      <input type="password" id="apiKeyInput" placeholder="API key (optional)">
+      <select id="reportSelect" onchange="onSelect()">
+        <option value="">Loading reports…</option>
+      </select>
+      <button class="btn btn-secondary" id="extractSelBtn" onclick="extractSelected()" style="display:none">⚙ Extract</button>
+      <button class="btn btn-secondary" id="extractAllBtn" onclick="extractAll()">⚙ Extract All</button>
+      <button class="btn" onclick="exportJSON()">↓ Export</button>
+    </div>
+  </header>
+
+  <div id="msgBar"></div>
+
+  <div class="content">
+
+    <!-- ── Overview ─────────────────────────────── -->
+    <div id="page-overview" class="page active">
+      <div class="welcome" id="welcome">
+        <div class="welcome-title">Welcome — select a report above</div>
+        <div class="welcome-sub">AI-extracted NI 43-101 structured data · Resources · Economics · Geology</div>
+      </div>
+      <div class="kpi-grid" id="kpiGrid">
+        <!-- populated by JS -->
+      </div>
+      <div class="mid-grid">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="card-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>Resource Estimate Breakdown</div>
+            <span class="card-badge" id="resDateBadge">—</span>
+          </div>
+          <div class="card-body" id="resChartBody">
+            <div class="empty-pg">Select a report to view resources</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="card-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/></svg></span>Financial Snapshot</div>
+            <span class="card-badge" id="econStudyBadge">—</span>
+          </div>
+          <div class="card-body" id="econSnapBody">
+            <div class="empty-pg">No economics extracted</div>
+          </div>
+        </div>
+      </div>
+      <div class="table-section">
+        <div class="table-toolbar">
+          <div class="table-title">Mineral Resources & Reserves</div>
+          <div class="table-right">
+            <div class="search-box">
+              <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 20 20"><circle cx="9" cy="9" r="6"/><path d="M15 15l3 3"/></svg>
+              <input type="text" placeholder="Filter rows…" id="tableFilter" oninput="filterTable()">
+            </div>
+            <button class="btn" onclick="exportJSON()">↑ Export</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="dt" id="mainTable">
+            <thead><tr>
+              <th>Category</th><th>Zone</th><th>Commodity</th>
+              <th class="r">Tonnes</th><th class="r">Grade</th>
+              <th class="r">Contained Metal</th><th>Cut-off</th><th>Eff. Date</th>
+            </tr></thead>
+            <tbody id="mainTbody"><tr><td colspan="8" class="empty-pg">Select a report above</td></tr></tbody>
+          </table>
+        </div>
+        <div class="footnote" id="tableNote"></div>
+      </div>
+    </div>
+
+    <!-- ── Resources & Reserves ─────────────────── -->
+    <div id="page-resources" class="page"><div id="resPage"></div></div>
+
+    <!-- ── Economics ────────────────────────────── -->
+    <div id="page-economics" class="page"><div id="econPage"></div></div>
+
+    <!-- ── Property & Geology ───────────────────── -->
+    <div id="page-property" class="page"><div id="propPage"></div></div>
+
+    <!-- ── Exploration & QPs ────────────────────── -->
+    <div id="page-exploration" class="page"><div id="explPage"></div></div>
+
+    <!-- ── Portfolio ─────────────────────────────── -->
+    <div id="page-portfolio" class="page">
+      <div class="portfolio-filters">
+        <select id="pfCommodity" onchange="renderPortfolio()"><option value="">All commodities</option></select>
+        <select id="pfCountry"   onchange="renderPortfolio()"><option value="">All countries</option></select>
+        <select id="pfStage"     onchange="renderPortfolio()"><option value="">All stages</option></select>
+        <input  type="text" id="pfSearch" placeholder="Search project / company…" oninput="renderPortfolio()">
+        <span class="pf-count" id="pfCount"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="dt pf-table" id="pfTable">
+          <thead><tr>
+            <th>Project</th><th>Company</th><th>Country</th><th>Stage</th>
+            <th>Commodity</th><th class="r">M+I Tonnes</th>
+            <th class="r">NPV</th><th class="r">Mine Life</th><th>Report Date</th>
+          </tr></thead>
+          <tbody id="pfTbody"><tr><td colspan="9" class="empty-pg">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── Map ───────────────────────────────────── -->
+    <div id="page-map" class="page">
+      <div class="map-filters">
+        <select id="mapCommodity" onchange="renderMap()"><option value="">All commodities</option></select>
+        <select id="mapStage"     onchange="renderMap()"><option value="">All stages</option></select>
+        <span style="font-size:12px;color:var(--muted);margin-left:4px">Bubble size ∝ M+I tonnage</span>
+      </div>
+      <div id="mapContainer"></div>
+      <div class="map-legend" id="mapLegend"></div>
+    </div>
+
+    <!-- ── Chat ─────────────────────────────────── -->
+    <div id="page-chat" class="page">
+      <div class="chat-wrap">
+        <div class="chat-messages" id="chatMessages">
+          <div class="chat-welcome" id="chatWelcome">
+            <div class="chat-welcome-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+            <div class="chat-welcome-title">Ask anything about your NI 43-101 reports</div>
+            <div class="chat-welcome-sub">Answers drawn from your full knowledge base · source pages cited below each reply</div>
+            <div class="chat-suggestions">
+              <button class="chat-suggestion" onclick="fillChat('What are the total mineral resources across all reports?')">Total mineral resources?</button>
+              <button class="chat-suggestion" onclick="fillChat('Summarise the project economics and NPV')">Project economics & NPV</button>
+              <button class="chat-suggestion" onclick="fillChat('What is the deposit type and host rock?')">Deposit type & host rock</button>
+              <button class="chat-suggestion" onclick="fillChat('Who are the qualified persons and what are their credentials?')">Qualified persons</button>
+            </div>
+          </div>
+        </div>
+        <div class="chat-input-area">
+          <div class="chat-input-wrap">
+            <div class="chat-filter-row">
+              <span>Filter:</span>
+              <select id="chatFilter">
+                <option value="">All reports</option>
+              </select>
+              <button class="btn" style="padding:3px 10px;font-size:12px" onclick="clearChat()">Clear</button>
+            </div>
+            <textarea id="chatInput" placeholder="Ask a question about the NI 43-101 reports…" rows="1"
+              onkeydown="chatKeydown(event)" oninput="autoGrow(this)"></textarea>
+          </div>
+          <button class="chat-send-btn" id="chatSendBtn" onclick="sendChat()" title="Send (Enter)">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"/>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</div><!-- /app -->
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────
+const API = location.protocol === 'file:' ? 'http://localhost:8000' : location.origin;
+let reports = [], current = null, dark = false;
+
+// ── SVG icon library ──────────────────────────────────────────────────────
+const IC = (d,extra='') => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
+const SVG = {
+  trendUp:   IC(`<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>`),
+  percent:   IC(`<line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>`),
+  building:  IC(`<path d="M17 21v-5a2 2 0 0 0-2-2H9a2 2 0 0 0-2 2v5"/><path d="M3 21h18"/><path d="M3 7l9-5 9 5v13H3z"/>`),
+  clock:     IC(`<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>`),
+  returnArr: IC(`<polyline points="9 14 4 19 9 24" style="display:none"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/><polyline points="9 10 4 15 9 20"/>`,''),
+  mountain:  IC(`<path d="m8 3 4 8 5-5 5 15H2L8 3z"/>`),
+  layers:    IC(`<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>`),
+  barChart:  IC(`<line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/>`),
+  mapPin:    IC(`<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>`),
+  compass:   IC(`<circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>`),
+  clipboard: IC(`<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>`),
+  coin:      IC(`<circle cx="12" cy="12" r="10"/><path d="M12 6v12m-4-6h8"/>`),
+  rock:      IC(`<path d="m8 3 4 8 5-5 5 15H2L8 3z"/><path d="M4.14 15.08c2.62-1.57 5.24-1.43 7.86.42"/>`),
+  users:     IC(`<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>`),
+  fileText:  IC(`<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>`),
+  payback:   IC(`<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.25L1 10"/>`),
+};
+
+// ── Theme ─────────────────────────────────────────────────────────────────
+function toggleTheme() {
+  dark = !dark;
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  document.getElementById('themeTrack').classList.toggle('on', dark);
+  document.getElementById('themeIcon').textContent  = dark ? '☀️' : '🌙';
+  document.getElementById('themeLabel').textContent = dark ? 'Light Mode' : 'Dark Mode';
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────
+const PAGE_TITLES = {
+  overview:'Dashboard', portfolio:'Portfolio Screener',
+  resources:'Resources & Reserves', economics:'Economics',
+  property:'Property & Geology', exploration:'Exploration & QPs',
+  map:'Project Map', chat:'Chat'
+};
+function navTo(page, el) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  if (el) el.classList.add('active');
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const pg = document.getElementById('page-' + page);
+  if (pg) pg.classList.add('active');
+  document.getElementById('pageTitle').textContent = PAGE_TITLES[page] || 'Dashboard';
+  const globalPage = page === 'chat' || page === 'portfolio' || page === 'map';
+  $('reportSelect').style.display   = globalPage ? 'none' : '';
+  $('extractAllBtn').style.display  = globalPage ? 'none' : '';
+  $('extractSelBtn').style.display  = (!globalPage && current) ? '' : 'none';
+  if (!globalPage && current) renderSection(page);
+  if (page === 'portfolio') renderPortfolio();
+  if (page === 'map')       renderMap();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const esc = s => s == null ? '' : String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const fmt = (v, fb='—') =>
+  (v == null || v === '' || (Array.isArray(v) && !v.length))
+    ? `<span class="null">${fb}</span>` : esc(String(v));
+
+function fmtT(v) {
+  if (v == null) return '<span class="null">—</span>';
+  if (v >= 1e9) return (v/1e9).toFixed(3)+' Bt';
+  if (v >= 1e6) return (v/1e6).toFixed(3)+' Mt';
+  if (v >= 1e3) return (v/1e3).toFixed(1)+' kt';
+  return v.toFixed(0)+' t';
+}
+function fmtTp(v) {
+  if (v == null) return '—';
+  if (v >= 1e6) return (v/1e6).toFixed(2)+' Mt';
+  if (v >= 1e3) return (v/1e3).toFixed(1)+' kt';
+  return v.toFixed(0)+' t';
+}
+function fmtM(v, u) {
+  if (v == null) return '<span class="null">—</span>';
+  const uu = u ? ' '+esc(u) : '';
+  if (v >= 1e6) return (v/1e6).toFixed(3)+'M'+uu;
+  if (v >= 1e3) return (v/1e3).toFixed(1)+'K'+uu;
+  return v.toFixed(0)+uu;
+}
+function fmtG(v, u) {
+  if (v == null) return '<span class="null">—</span>';
+  return v.toFixed(2)+(u?' '+esc(u):'');
+}
+function pillClass(cat) {
+  const c = (cat||'').toLowerCase();
+  if (/measured/.test(c))  return 'pill-m';
+  if (/indicated/.test(c)) return 'pill-i';
+  if (/inferred/.test(c))  return 'pill-inf';
+  if (/proven/.test(c))    return 'pill-pn';
+  if (/probable/.test(c))  return 'pill-pb';
+  return 'pill-inf';
+}
+function rcClass(cat) {
+  const c = (cat||'').toLowerCase();
+  if (/measured/.test(c))  return 'measured';
+  if (/indicated/.test(c)) return 'indicated';
+  if (/proven/.test(c))    return 'proven';
+  if (/probable/.test(c))  return 'probable';
+  return 'inferred';
+}
+function setMsg(text, type='info') {
+  const b = $('msgBar');
+  if (text) { b.style.display=''; b.className=type; b.textContent=text; }
+  else b.style.display='none';
+}
+function groupBy(rows, key='category') {
+  const g = {};
+  for (const r of rows) {
+    const k = (r[key]||'Other').trim();
+    (g[k]||(g[k]=[])).push(r);
+  }
+  return g;
+}
+function primaryGrade(r) {
+  // Support both old flat schema (grade/grade_unit) and new grades[] schema
+  if (r.grades && r.grades.length) return r.grades[0];
+  return { grade_value: r.grade, grade_unit: r.grade_unit,
+           contained_metal: r.contained_metal, contained_metal_unit: r.contained_metal_unit };
+}
+function fmtGrades(r) {
+  if (!r.grades || !r.grades.length) return fmtG(r.grade, r.grade_unit);
+  return r.grades.filter(g => g.grade_value != null)
+    .map(g => `${g.commodity ? esc(g.commodity)+': ' : ''}${fmtG(g.grade_value, g.grade_unit)}`)
+    .join(' &bull; ') || '<span class="null">—</span>';
+}
+function sumGroup(rows) {
+  let t=0, gw=0, m=0;
+  for (const r of rows) {
+    const g = primaryGrade(r);
+    t  += r.tonnes||0;
+    gw += (g.grade_value||0)*(r.tonnes||0);
+    m  += g.contained_metal||0;
+  }
+  const g0 = primaryGrade(rows[0]||{});
+  return { tonnes:t, grade:t>0?gw/t:null, metal:m||null,
+    grade_unit:g0?.grade_unit||'', metal_unit:g0?.contained_metal_unit||'' };
+}
+
+// ── API ───────────────────────────────────────────────────────────────────
+function apiHdr() {
+  const k = ($('apiKeyInput')||{}).value||'';
+  return k.trim() ? {'X-API-Key':k.trim()} : {};
+}
+async function loadReports() {
+  const sel = $('reportSelect');
+  sel.innerHTML = '<option value="">Loading…</option>';
+  setMsg('');
+  try {
+    const res = await fetch(`${API}/api/reports`, { headers: apiHdr() });
+    if (!res.ok) throw new Error('HTTP '+res.status);
+    const data = await res.json();
+    reports = data.reports || [];
+    if (!reports.length) {
+      sel.innerHTML = '<option value="">No extractions found</option>';
+      setMsg('No extractions yet — click ⚙ Extract All to run.', 'info');
+      return;
+    }
+    const opts = reports.map(r => {
+      const name = r.source_file||'report';
+      const label = r.report_title ? `${r.report_title} (${name})` : name;
+      return `<option value="${esc(name)}">${esc(label)}</option>`;
+    }).join('');
+    sel.innerHTML = '<option value="">Select a report…</option>' + opts;
+    const cf = $('chatFilter');
+    if (cf) cf.innerHTML = '<option value="">All reports</option>' + opts;
+    populateFilterDropdowns();
+  } catch(e) {
+    setMsg(`Cannot reach API at ${API} — ${e.message}`, 'error');
+    sel.innerHTML = '<option value="">Error loading</option>';
+  }
+}
+function onSelect() {
+  const name = $('reportSelect').value;
+  $('extractSelBtn').style.display = name ? '' : 'none';
+  if (!name) { current=null; return; }
+  current = reports.find(r=>r.source_file===name)||null;
+  if (current) { renderOverview(current); }
+}
+async function extractAll() {
+  const btn = $('extractAllBtn');
+  btn.disabled = true; btn.textContent = 'Extracting…';
+  setMsg('Running extraction — this may take several minutes…', 'info');
+  try {
+    const res = await fetch(`${API}/api/extract/all`, { method:'POST', headers: apiHdr() });
+    if (!res.ok) throw new Error('HTTP '+res.status);
+    const data = await res.json();
+    setMsg(`Extraction complete: ${data.files?.length ?? 0} report(s) processed.`, 'success');
+    await loadReports();
+  } catch(e) {
+    setMsg(`Extraction failed: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '⚙ Extract All';
+  }
+}
+async function extractSelected() {
+  if (!current) return;
+  const btn = $('extractSelBtn');
+  btn.disabled = true; btn.textContent = 'Extracting…';
+  setMsg(`Extracting ${current.source_file}…`, 'info');
+  try {
+    const res = await fetch(`${API}/api/extract`, {
+      method:'POST',
+      headers: { ...apiHdr(), 'Content-Type':'application/json' },
+      body: JSON.stringify({ filename: current.source_file })
+    });
+    if (!res.ok) throw new Error('HTTP '+res.status);
+    setMsg('Extraction complete.', 'success');
+    await loadReports();
+  } catch(e) {
+    setMsg(`Extraction failed: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '⚙ Extract';
+  }
+}
+function exportJSON() {
+  if (!current) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(current,null,2)],{type:'application/json'}));
+  a.download = (current.source_file||'report')+'_extracted.json';
+  a.click();
+}
+
+// ── Section router ────────────────────────────────────────────────────────
+function renderSection(page) {
+  if (!current) return;
+  if (page==='resources')   renderResPage(current);
+  if (page==='economics')   renderEconPage(current);
+  if (page==='property')    renderPropPage(current);
+  if (page==='exploration') renderExplPage(current);
+}
+
+// ── Portfolio Screener ────────────────────────────────────────────────────
+const COMMODITY_COLORS = {
+  au:'#F59E0B',gold:'#F59E0B',
+  cu:'#C2410C',copper:'#C2410C',
+  ag:'#9CA3AF',silver:'#9CA3AF',
+  li:'#3B82F6',lithium:'#3B82F6',
+  ni:'#10B981',nickel:'#10B981',
+  zn:'#8B5CF6',zinc:'#8B5CF6',
+  pb:'#6B7280',lead:'#6B7280',
+  fe:'#EF4444',iron:'#EF4444',
+  co:'#06B6D4',cobalt:'#06B6D4',
+  mo:'#F97316',molybdenum:'#F97316',
+  u3o8:'#84CC16',uranium:'#84CC16',
+};
+function commodityColor(s) {
+  if (!s) return '#9CA3AF';
+  const k = s.toLowerCase().replace(/[^a-z0-9]/g,'');
+  for (const [key, col] of Object.entries(COMMODITY_COLORS)) {
+    if (k.includes(key)) return col;
+  }
+  return '#9CA3AF';
+}
+function stageKey(s) {
+  if (!s) return 'default';
+  const l = s.toLowerCase();
+  if (l.includes('operating') || l.includes('produc')) return 'operating';
+  if (l.includes('construction'))  return 'construction';
+  if (l.includes('feasibility') && !l.includes('pre')) return 'feasibility';
+  if (l.includes('pre-feasib') || l.includes('prefeasib')) return 'prefeasibility';
+  if (l.includes('pea') || l.includes('preliminary econ')) return 'pea';
+  if (l.includes('care') || l.includes('maintenance')) return 'care';
+  if (l.includes('exploration') || l.includes('grassroots') || l.includes('resource def')) return 'exploration';
+  return 'default';
+}
+function miTonnes(d) {
+  const rows = (d.mineral_resources||[]).filter(r=>
+    /measured|indicated/i.test(r.category||''));
+  return rows.reduce((s,r)=>s+(r.tonnes||0),0);
+}
+function populateFilterDropdowns() {
+  const allCommodities = new Set(), allCountries = new Set(), allStages = new Set();
+  for (const r of reports) {
+    (r.property_info?.commodities||[]).forEach(c=>allCommodities.add(c));
+    if (r.property_info?.country) allCountries.add(r.property_info.country);
+    if (r.property_info?.project_stage) allStages.add(r.property_info.project_stage);
+  }
+  ['pfCommodity','mapCommodity'].forEach(id=>{
+    const el=$( id); if(!el) return;
+    const prev=el.value;
+    el.innerHTML='<option value="">All commodities</option>'+
+      [...allCommodities].sort().map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    if(prev) el.value=prev;
+  });
+  const pfCountry=$('pfCountry');
+  if(pfCountry){
+    const prev=pfCountry.value;
+    pfCountry.innerHTML='<option value="">All countries</option>'+
+      [...allCountries].sort().map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    if(prev) pfCountry.value=prev;
+  }
+  ['pfStage','mapStage'].forEach(id=>{
+    const el=$(id); if(!el) return;
+    const prev=el.value;
+    el.innerHTML='<option value="">All stages</option>'+
+      [...allStages].sort().map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    if(prev) el.value=prev;
+  });
+}
+function filterReports() {
+  const comm = ($('pfCommodity')||{}).value||'';
+  const ctry = ($('pfCountry')||{}).value||'';
+  const stg  = ($('pfStage')||{}).value||'';
+  const q    = (($('pfSearch')||{}).value||'').toLowerCase();
+  return reports.filter(r=>{
+    if(comm && !(r.property_info?.commodities||[]).map(c=>c.toLowerCase()).some(c=>c.includes(comm.toLowerCase()))) return false;
+    if(ctry && (r.property_info?.country||'').toLowerCase()!==ctry.toLowerCase()) return false;
+    if(stg  && (r.property_info?.project_stage||'').toLowerCase()!==stg.toLowerCase()) return false;
+    if(q){
+      const blob=[r.report_title,r.issuer,r.property_info?.project_name,
+        r.property_info?.country,r.source_file].filter(Boolean).join(' ').toLowerCase();
+      if(!blob.includes(q)) return false;
+    }
+    return true;
+  });
+}
+function renderPortfolio() {
+  populateFilterDropdowns();
+  const filtered = filterReports();
+  $('pfCount').textContent = `${filtered.length} of ${reports.length} reports`;
+  const tbody=$('pfTbody');
+  if(!filtered.length){
+    tbody.innerHTML='<tr><td colspan="9" class="empty-pg">No reports match the current filters</td></tr>';
+    return;
+  }
+  tbody.innerHTML = filtered.map(r=>{
+    const prop = r.property_info||{};
+    const comms = (prop.commodities||[]).map(c=>`<span class="comm-chip">${esc(c)}</span>`).join('');
+    const sk = stageKey(prop.project_stage);
+    const stage = prop.project_stage
+      ? `<span class="stage-chip ${sk}">${esc(prop.project_stage)}</span>` : '—';
+    const mi = miTonnes(r);
+    const miStr = mi>0 ? fmtTp(mi) : '<span class="null">—</span>';
+    const npv   = r.economics?.post_tax_npv||r.economics?.pre_tax_npv||null;
+    const life  = r.economics?.mine_life_years;
+    return `<tr onclick="selectFromPortfolio('${esc(r.source_file||'')}')">
+      <td><strong>${esc(prop.project_name||r.report_title||r.source_file||'—')}</strong></td>
+      <td>${esc(r.issuer||'—')}</td>
+      <td>${esc(prop.country||'—')}</td>
+      <td>${stage}</td>
+      <td>${comms||'<span class="null">—</span>'}</td>
+      <td class="r">${miStr}</td>
+      <td class="r">${npv?esc(npv):'<span class="null">—</span>'}</td>
+      <td class="r">${life!=null?life+' yr':'<span class="null">—</span>'}</td>
+      <td>${esc(r.report_date||'—')}</td>
+    </tr>`;
+  }).join('');
+}
+function selectFromPortfolio(filename) {
+  const r = reports.find(x=>x.source_file===filename);
+  if(!r) return;
+  current = r;
+  const sel = $('reportSelect');
+  sel.value = filename;
+  $('extractSelBtn').style.display = '';
+  navTo('overview', document.querySelector('.nav-item'));
+  renderOverview(current);
+}
+
+// ── Map ───────────────────────────────────────────────────────────────────
+let _leafletMap = null;
+let _leafletMarkers = [];
+
+function renderMap() {
+  populateFilterDropdowns();
+  const commF = ($('mapCommodity')||{}).value||'';
+  const stgF  = ($('mapStage')||{}).value||'';
+
+  const mapped = reports.filter(r=>{
+    const prop = r.property_info||{};
+    if(prop.latitude==null||prop.longitude==null) return false;
+    if(commF && !(prop.commodities||[]).map(c=>c.toLowerCase()).some(c=>c.includes(commF.toLowerCase()))) return false;
+    if(stgF && (prop.project_stage||'').toLowerCase()!==stgF.toLowerCase()) return false;
+    return true;
+  });
+
+  // Initialise map once
+  if(!_leafletMap){
+    _leafletMap = L.map('mapContainer',{zoomControl:true}).setView([20,0],2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+      attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      maxZoom:18,
+    }).addTo(_leafletMap);
+  } else {
+    _leafletMarkers.forEach(m=>_leafletMap.removeLayer(m));
+    _leafletMarkers=[];
+  }
+
+  const seenComms = new Set();
+  mapped.forEach(r=>{
+    const prop = r.property_info||{};
+    const lat = prop.latitude, lng = prop.longitude;
+    const primary = (prop.commodities||[])[0]||'';
+    const col = commodityColor(primary);
+    if(primary) seenComms.add(primary);
+    const mi = miTonnes(r);
+    const radius = mi>0 ? Math.max(6, Math.min(30, 6+Math.sqrt(mi/1e6)*2.5)) : 8;
+    const circle = L.circleMarker([lat,lng],{
+      radius, color:col, fillColor:col, fillOpacity:.65, weight:1.5
+    });
+    const name = prop.project_name||r.report_title||r.source_file||'Project';
+    const stage= prop.project_stage||'';
+    const comms=(prop.commodities||[]).join(', ');
+    const npv  = r.economics?.post_tax_npv||r.economics?.pre_tax_npv||'';
+    const miLabel = mi>0 ? fmtTp(mi)+' M+I' : 'No resource estimate';
+    circle.bindPopup(`
+      <div class="map-popup-title">${esc(name)}</div>
+      <div class="map-popup-row"><strong>Company:</strong> ${esc(r.issuer||'—')}</div>
+      <div class="map-popup-row"><strong>Location:</strong> ${esc([prop.country,prop.region].filter(Boolean).join(', ')||'—')}</div>
+      ${stage?`<div class="map-popup-row"><strong>Stage:</strong> ${esc(stage)}</div>`:''}
+      ${comms?`<div class="map-popup-row"><strong>Commodity:</strong> ${esc(comms)}</div>`:''}
+      <div class="map-popup-row"><strong>M+I:</strong> ${esc(miLabel)}</div>
+      ${npv?`<div class="map-popup-row"><strong>NPV:</strong> ${esc(npv)}</div>`:''}
+      <span class="map-popup-link" onclick="selectFromPortfolio('${esc(r.source_file||'')}')">View full report →</span>
+    `);
+    circle.addTo(_leafletMap);
+    _leafletMarkers.push(circle);
+  });
+
+  // Legend
+  const legend = $('mapLegend');
+  if(seenComms.size){
+    legend.innerHTML = [...seenComms].map(c=>
+      `<span><span class="legend-dot" style="background:${commodityColor(c)}"></span>${esc(c)}</span>`
+    ).join('');
+  } else {
+    legend.innerHTML = `<span style="color:var(--muted)">No geo-located reports${commF||stgF?' match current filters':' — run extraction to populate coordinates'}.</span>`;
+  }
+
+  // Force Leaflet to recalculate size after page becomes visible
+  setTimeout(()=>_leafletMap.invalidateSize(),50);
+}
+
+// ── OVERVIEW ──────────────────────────────────────────────────────────────
+function renderOverview(d) {
+  // Welcome
+  const prop = d.property_info;
+  const loc  = [prop?.country,prop?.region].filter(Boolean).join(', ');
+  const resN = (d.mineral_resources||[]).length;
+  const revN = (d.mineral_reserves||[]).length;
+  const stage = prop?.project_stage;
+  const exch  = prop?.exchange_listed;
+  const stageBadge = stage ? `<span class="stage-chip ${stageKey(stage)}" style="margin-left:10px">${esc(stage)}</span>` : '';
+  const exchBadge  = exch  ? `<span class="comm-chip" style="margin-left:6px">${esc(exch)}</span>` : '';
+  $('welcome').innerHTML = `
+    <div class="welcome-title">${esc(d.report_title||d.source_file||'Report')}${stageBadge}${exchBadge}</div>
+    <div class="welcome-sub">
+      ${loc?esc(loc)+' · ':''}
+      <strong>${resN}</strong> resource row${resN!==1?'s':''} and
+      <strong>${revN}</strong> reserve row${revN!==1?'s':''} extracted.
+      ${d.report_purpose?'· '+esc(d.report_purpose):''}
+    </div>`;
+
+  // KPIs
+  const e = d.economics||{};
+  const mi = (d.mineral_resources||[]).filter(r=>/measured|indicated/i.test(r.category||''));
+  const miT = mi.reduce((s,r)=>s+(r.tonnes||0),0);
+  const kpis = [
+    {icon:SVG.trendUp,  label:'Post-Tax NPV',  value:e.post_tax_npv ||null, sub:e.discount_rate?`@ ${e.discount_rate}`:''},
+    {icon:SVG.percent,  label:'IRR',           value:e.irr          ||null, sub:e.study_type||''},
+    {icon:SVG.building, label:'Initial CapEx', value:e.initial_capex||null, sub:e.sustaining_capex?`+${e.sustaining_capex} sustaining`:''},
+    {icon:SVG.clock,    label:'Mine Life',     value:e.mine_life_years!=null?`${e.mine_life_years} yr`:null, sub:''},
+    {icon:SVG.payback,  label:'Payback',       value:e.payback_years !=null?`${e.payback_years} yr` :null, sub:''},
+    {icon:SVG.mountain, label:'M+I Resources', value:miT>0?fmtTp(miT):null, sub:''},
+  ];
+  $('kpiGrid').innerHTML = kpis.map(k=>`
+    <div class="kpi-card">
+      <div class="kpi-icon">${k.icon}</div>
+      <div class="kpi-label">${k.label}</div>
+      <div class="kpi-value${!k.value?' dim':''}">${k.value?esc(k.value):'—'}</div>
+      ${k.sub?`<div class="kpi-sub">${esc(k.sub)}</div>`:''}
+    </div>`).join('');
+
+  // Resource chart
+  const allRows = [...(d.mineral_resources||[]),(d.mineral_reserves||[])];
+  $('resDateBadge').textContent = d.mineral_resources?.find(r=>r.effective_date)?.effective_date || d.report_date || '—';
+  if (!allRows.length) {
+    $('resChartBody').innerHTML = '<div class="empty-pg">No resource data</div>';
+  } else {
+    const groups = groupBy(allRows);
+    const maxT = Math.max(...Object.values(groups).map(g=>g.reduce((s,r)=>s+(r.tonnes||0),0)),1);
+    const ORDER = ['Measured','Indicated','Proven','Probable','Inferred'];
+    const cats = ORDER.filter(k=>groups[k]).concat(Object.keys(groups).filter(k=>!ORDER.includes(k)));
+    $('resChartBody').innerHTML = `<div class="res-chart">
+      ${cats.map(cat=>{
+        const t = groups[cat].reduce((s,r)=>s+(r.tonnes||0),0);
+        const pct = Math.max(t/maxT*100,2).toFixed(1);
+        return `<div class="rc-row">
+          <div class="rc-labels"><span class="rc-cat">${esc(cat)}</span><span class="rc-val">${fmtTp(t)}</span></div>
+          <div class="rc-track">
+            <div class="rc-fill ${rcClass(cat)}" style="width:${pct}%">${pct>25?fmtTp(t):''}</div>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
+  }
+
+  // Econ snapshot
+  $('econStudyBadge').textContent = e.study_type||'—';
+  if (!d.economics) {
+    $('econSnapBody').innerHTML = '<div class="empty-pg">No economics extracted</div>';
+  } else {
+    const rows = [
+      {l:'Pre-Tax NPV',   v:e.pre_tax_npv   ||'—'},
+      {l:'IRR',           v:e.irr           ||'—'},
+      {l:'Initial CapEx', v:e.initial_capex ||'—'},
+      {l:'Sustaining',    v:e.sustaining_capex||'—'},
+      {l:'OpEx',          v:e.opex          ||'—'},
+      {l:'Payback',       v:e.payback_years !=null?`${e.payback_years} yr`:'—'},
+    ];
+    $('econSnapBody').innerHTML = `
+      <div class="econ-big">
+        <div class="econ-big-lbl">Post-Tax NPV</div>
+        <div class="econ-big-val${!e.post_tax_npv?' dim':''}">${esc(e.post_tax_npv||'—')}</div>
+        ${e.discount_rate?`<div class="econ-big-sub">↑ ${esc(e.discount_rate)} discount rate</div>`:''}
+      </div>
+      <div class="econ-rows">
+        ${rows.map(r=>`<div class="econ-row"><span class="econ-lbl">${r.l}</span><span class="econ-val">${esc(r.v)}</span></div>`).join('')}
+      </div>
+      ${(e.metal_price_assumptions||[]).length?`<div class="tag-group">${e.metal_price_assumptions.map(p=>`<span class="tag">${esc(p)}</span>`).join('')}</div>`:''}`;
+  }
+
+  // Main table
+  buildMainTable(d);
+}
+
+function buildMainTable(d) {
+  const sections = [];
+  if ((d.mineral_resources||[]).length) sections.push({title:'Mineral Resources',rows:d.mineral_resources});
+  if ((d.mineral_reserves||[]).length)  sections.push({title:'Mineral Reserves', rows:d.mineral_reserves});
+  if (!sections.length) {
+    $('mainTbody').innerHTML='<tr><td colspan="8" class="empty-pg">No data extracted</td></tr>';
+    $('tableNote').textContent='';
+    return;
+  }
+  let html='';
+  for (const {title,rows} of sections) {
+    html+=`<tr class="cat-row"><td colspan="8">${title}</td></tr>`;
+    const groups = groupBy(rows);
+    for (const [cat,catRows] of Object.entries(groups)) {
+      for (const r of catRows) {
+        { const g0=primaryGrade(r);
+        html+=`<tr>
+          <td><span class="pill ${pillClass(cat)}">${esc(cat)}</span></td>
+          <td>${esc(r.zone||'—')}</td>
+          <td>${esc(r.commodity||'—')}</td>
+          <td class="r">${r.tonnes!=null?fmtT(r.tonnes):'<span class="null">—</span>'}</td>
+          <td class="r">${fmtGrades(r)}</td>
+          <td class="r">${fmtM(g0.contained_metal,g0.contained_metal_unit)}</td>
+          <td>${esc(r.cut_off_grade||'—')}</td>
+          <td>${esc(r.effective_date||'—')}</td>
+        </tr>`;}
+      }
+      if (catRows.length>1) {
+        const s = sumGroup(catRows);
+        html+=`<tr class="total-row">
+          <td>Total ${esc(cat)}</td><td>—</td><td>—</td>
+          <td class="r">${fmtT(s.tonnes)}</td>
+          <td class="r">${fmtG(s.grade,s.grade_unit)}</td>
+          <td class="r">${fmtM(s.metal,s.metal_unit)}</td>
+          <td>—</td><td>—</td>
+        </tr>`;
+      }
+    }
+  }
+  $('mainTbody').innerHTML = html;
+  const cutoff = [...(d.mineral_resources||[]),...(d.mineral_reserves||[])].find(r=>r.cut_off_grade)?.cut_off_grade||'';
+  const total  = (d.mineral_resources||[]).length+(d.mineral_reserves||[]).length;
+  $('tableNote').textContent = [cutoff?`Cut-off: ${cutoff}`:'', `${total} row${total!==1?'s':''}`].filter(Boolean).join(' · ');
+}
+
+function filterTable() {
+  const q = ($('tableFilter').value||'').toLowerCase();
+  document.querySelectorAll('#mainTbody tr').forEach(r => {
+    if (r.classList.contains('cat-row')||r.classList.contains('total-row')) return;
+    r.style.display = (!q || r.textContent.toLowerCase().includes(q)) ? '' : 'none';
+  });
+}
+
+// ── RESOURCES PAGE ────────────────────────────────────────────────────────
+function renderResPage(d) {
+  const makeTable = (rows, title) => {
+    if (!rows.length) return `<div class="card g1"><div class="card-header"><div class="card-title"><span class="card-icon">${SVG.layers}</span>${title}</div></div><div class="empty-pg" style="padding:40px">No ${title.toLowerCase()} extracted</div></div>`;
+    const groups = groupBy(rows);
+    let tbody='';
+    for (const [cat,catRows] of Object.entries(groups)) {
+      tbody+=`<tr class="cat-row"><td colspan="8">${esc(cat)}</td></tr>`;
+      for (const r of catRows) {
+        const g0=primaryGrade(r);
+        tbody+=`<tr>
+          <td><span class="pill ${pillClass(cat)}">${esc(cat)}</span></td>
+          <td>${esc(r.zone||'—')}</td><td>${esc(r.commodity||'—')}</td>
+          <td class="r">${r.tonnes!=null?fmtT(r.tonnes):'<span class="null">—</span>'}</td>
+          <td class="r">${fmtGrades(r)}</td>
+          <td class="r">${fmtM(g0.contained_metal,g0.contained_metal_unit)}</td>
+          <td>${esc(r.cut_off_grade||'—')}</td><td>${esc(r.effective_date||'—')}</td>
+        </tr>`;
+      }
+      if (catRows.length>1) {
+        const s=sumGroup(catRows);
+        tbody+=`<tr class="total-row"><td>Total ${esc(cat)}</td><td>—</td><td>—</td>
+          <td class="r">${fmtT(s.tonnes)}</td><td class="r">${fmtG(s.grade,s.grade_unit)}</td>
+          <td class="r">${fmtM(s.metal,s.metal_unit)}</td><td>—</td><td>—</td></tr>`;
+      }
+    }
+    const co = rows.find(r=>r.cut_off_grade)?.cut_off_grade||'';
+    return `<div class="table-section g1">
+      <div class="table-toolbar"><div class="table-title">${title}</div>${co?`<span class="card-badge">Cut-off: ${esc(co)}</span>`:''}</div>
+      <div class="table-wrap"><table class="dt">
+        <thead><tr><th>Category</th><th>Zone</th><th>Commodity</th>
+          <th class="r">Tonnes</th><th class="r">Grade</th><th class="r">Contained Metal</th>
+          <th>Cut-off</th><th>Eff. Date</th></tr></thead>
+        <tbody>${tbody}</tbody>
+      </table></div>
+    </div>`;
+  };
+  $('resPage').innerHTML = makeTable(d.mineral_resources||[],'Mineral Resources') + makeTable(d.mineral_reserves||[],'Mineral Reserves');
+}
+
+// ── ECONOMICS PAGE ────────────────────────────────────────────────────────
+function renderEconPage(d) {
+  const e = d.economics;
+  if (!e) { $('econPage').innerHTML='<div class="empty-pg" style="padding:80px">No economic data extracted</div>'; return; }
+  const m3 = [{l:'Post-Tax NPV',v:e.post_tax_npv||'—'},{l:'Pre-Tax NPV',v:e.pre_tax_npv||'—'},{l:'IRR',v:e.irr||'—'}];
+  const m3b= [{l:'Initial CapEx',v:e.initial_capex||'—'},{l:'Sustaining CapEx',v:e.sustaining_capex||'—'},{l:'OpEx',v:e.opex||'—'}];
+  const kv = [{l:'Study Type',v:e.study_type||'—'},{l:'Discount Rate',v:e.discount_rate||'—'},
+              {l:'Mine Life',v:e.mine_life_years!=null?`${e.mine_life_years} years`:'—'},
+              {l:'Payback',v:e.payback_years!=null?`${e.payback_years} years`:'—'}];
+  $('econPage').innerHTML = `
+    <div class="g3">
+      ${m3.map(m=>`<div class="card"><div class="metric-box">
+        <div class="metric-lbl">${m.l}</div>
+        <div class="metric-val${m.v==='—'?' dim':''}">${esc(m.v)}</div>
+      </div></div>`).join('')}
+    </div>
+    <div class="g3">
+      ${m3b.map(m=>`<div class="card"><div class="metric-box">
+        <div class="metric-lbl">${m.l}</div>
+        <div class="metric-val${m.v==='—'?' dim':''}" style="font-size:22px">${esc(m.v)}</div>
+      </div></div>`).join('')}
+    </div>
+    <div class="g2">
+      <div class="card"><div class="card-header"><div class="card-title"><span class="card-icon">${SVG.clipboard}</span>Study Parameters</div></div>
+        <div class="card-body"><div class="kv-list">
+          ${kv.map(r=>`<div class="kv-item"><span class="kv-lbl">${r.l}</span><span class="kv-val">${esc(r.v)}</span></div>`).join('')}
+        </div></div>
+      </div>
+      ${(e.metal_price_assumptions||[]).length?`
+      <div class="card"><div class="card-header"><div class="card-title"><span class="card-icon">${SVG.coin}</span>Metal Price Assumptions</div></div>
+        <div class="card-body"><div class="tag-group" style="margin:0;padding:0;border:none">
+          ${e.metal_price_assumptions.map(p=>`<span class="tag">${esc(p)}</span>`).join('')}
+        </div></div>
+      </div>`:''}
+    </div>`;
+}
+
+// ── PROPERTY & GEOLOGY PAGE ───────────────────────────────────────────────
+function renderPropPage(d) {
+  const p = d.property_info;
+  const g = d.geology;
+  const propHtml = p ? `
+    <div class="card g1">
+      <div class="card-header">
+        <div class="card-title"><span class="card-icon">${SVG.mapPin}</span>Property Information</div>
+        ${(p.commodities||[]).length?`<div class="tag-group" style="margin:0;padding:0;border:none">
+          ${p.commodities.map(c=>`<span class="tag">${esc(c)}</span>`).join('')}</div>`:''}
+      </div>
+      <div class="card-body">
+        <div class="g3" style="margin-bottom:14px">
+          ${[{l:'Project',v:p.project_name},{l:'Country',v:p.country},{l:'Region',v:p.region}].map(m=>`
+          <div style="padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;text-align:center">
+            <div style="font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">${m.l}</div>
+            <div style="font-size:16px;font-weight:700;color:var(--text)">${esc(m.v||'—')}</div>
+          </div>`).join('')}
+        </div>
+        <div class="kv-list">
+          ${[{l:'Coordinates',v:p.coordinates},{l:'Area (ha)',v:p.area_hectares!=null?p.area_hectares.toLocaleString():null},
+             {l:'Ownership',v:p.ownership},{l:'Tenure Status',v:p.tenure_status}]
+            .map(r=>`<div class="kv-item"><span class="kv-lbl">${r.l}</span><span class="kv-val">${r.v?esc(r.v):'<span class="null">—</span>'}</span></div>`).join('')}
+        </div>
+      </div>
+    </div>` :
+    `<div class="card g1"><div class="card-header"><div class="card-title"><span class="card-icon">${SVG.mapPin}</span>Property Information</div></div>
+     <div class="empty-pg" style="padding:40px">No property data extracted</div></div>`;
+
+  const geoRows = g ? [{l:'Deposit Type',v:g.deposit_type},{l:'Host Rock',v:g.host_rock},
+    {l:'Mineralisation Style',v:g.mineralization_style},{l:'Structural Controls',v:g.structural_controls},
+    {l:'Alteration',v:g.alteration}].filter(r=>r.v) : [];
+  const geoHtml = `
+    <div class="card g1">
+      <div class="card-header"><div class="card-title"><span class="card-icon">${SVG.rock}</span>Geology</div></div>
+      <div class="card-body">
+        ${geoRows.length ? geoRows.map(r=>`<div class="geo-row"><div class="geo-lbl">${r.l}</div><div class="geo-val">${esc(r.v)}</div></div>`).join('')
+          : '<div class="empty-pg">No geology data extracted</div>'}
+      </div>
+    </div>`;
+
+  $('propPage').innerHTML = propHtml + geoHtml;
+}
+
+// ── EXPLORATION & QPS PAGE ────────────────────────────────────────────────
+function renderExplPage(d) {
+  const x = d.exploration;
+  const qps = d.qualified_persons||[];
+  const explHtml = x ? `
+    <div class="card g1">
+      <div class="card-header"><div class="card-title"><span class="card-icon">${SVG.compass}</span>Exploration Summary</div></div>
+      <div class="card-body">
+        <div class="g3" style="margin-bottom:14px">
+          ${[{l:'Drill Holes',v:x.total_drill_holes!=null?x.total_drill_holes.toLocaleString():null},
+             {l:'Metres Drilled',v:x.total_metres_drilled!=null?(x.total_metres_drilled>=1000?(x.total_metres_drilled/1000).toFixed(1)+' km':x.total_metres_drilled.toFixed(0)+' m'):null},
+             {l:'Last Program',v:x.last_program_date}]
+            .map(m=>`<div style="padding:12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;text-align:center">
+              <div style="font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">${m.l}</div>
+              <div style="font-size:18px;font-weight:700;color:var(--text)">${esc(m.v||'—')}</div>
+            </div>`).join('')}
+        </div>
+        ${(x.drilling_types||[]).length?`<div style="margin-bottom:10px">
+          <div style="font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px">Drilling Types</div>
+          <div class="tag-group" style="margin:0;padding:0;border:none">${x.drilling_types.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div>
+        </div>`:''}
+        ${x.sampling_methods?`<div class="kv-list"><div class="kv-item"><span class="kv-lbl">Sampling</span><span class="kv-val">${esc(x.sampling_methods)}</span></div></div>`:''}
+        ${(x.notable_intercepts||[]).length?`
+          <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+            <div style="font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Notable Intercepts</div>
+            ${x.notable_intercepts.map(i=>`<div class="intercept-item">${esc(i)}</div>`).join('')}
+          </div>`:''}
+      </div>
+    </div>` :
+    `<div class="card g1"><div class="card-header"><div class="card-title"><span class="card-icon">${SVG.compass}</span>Exploration</div></div>
+     <div class="empty-pg" style="padding:40px">No exploration data extracted</div></div>`;
+
+  const qpHtml = qps.length ? `
+    <div class="card g1">
+      <div class="card-header">
+        <div class="card-title"><span class="card-icon">${SVG.users}</span>Qualified Persons</div>
+        <span class="card-badge">${qps.length} QP${qps.length!==1?'s':''}</span>
+      </div>
+      <div class="card-body">
+        <div class="qp-grid">
+          ${qps.map(q=>`<div class="qp-card">
+            <div class="qp-name">${esc(q.name||'—')}</div>
+            ${q.credentials?`<div class="qp-cred">${esc(q.credentials)}</div>`:''}
+            ${q.responsibility?`<div class="qp-resp">${esc(q.responsibility)}</div>`:''}
+          </div>`).join('')}
+        </div>
+      </div>
+    </div>` : '';
+
+  const sumHtml = d.summary ? `
+    <div class="card g1">
+      <div class="card-header"><div class="card-title"><span class="card-icon">${SVG.fileText}</span>Executive Summary</div></div>
+      <div class="card-body"><div class="summary-text">${esc(d.summary)}</div></div>
+    </div>` : '';
+
+  $('explPage').innerHTML = explHtml + qpHtml + sumHtml;
+}
+
+// ── CHAT ──────────────────────────────────────────────────────────────────
+const CHAT_WELCOME_HTML = `
+  <div class="chat-welcome-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+  <div class="chat-welcome-title">Ask anything about your NI 43-101 reports</div>
+  <div class="chat-welcome-sub">Answers drawn from your full knowledge base · source pages cited below each reply</div>
+  <div class="chat-suggestions">
+    <button class="chat-suggestion" onclick="fillChat('What are the total mineral resources across all reports?')">Total mineral resources?</button>
+    <button class="chat-suggestion" onclick="fillChat('Summarise the project economics and NPV')">Project economics & NPV</button>
+    <button class="chat-suggestion" onclick="fillChat('What is the deposit type and host rock?')">Deposit type & host rock</button>
+    <button class="chat-suggestion" onclick="fillChat('Who are the qualified persons and what are their credentials?')">Qualified persons</button>
+  </div>`;
+
+function fillChat(text) {
+  const inp = $('chatInput');
+  inp.value = text;
+  autoGrow(inp);
+  inp.focus();
+}
+
+function chatKeydown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+}
+
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 130) + 'px';
+}
+
+function clearChat() {
+  const msgs = $('chatMessages');
+  msgs.innerHTML = '';
+  const w = document.createElement('div');
+  w.id = 'chatWelcome';
+  w.className = 'chat-welcome';
+  w.innerHTML = CHAT_WELCOME_HTML;
+  msgs.appendChild(w);
+}
+
+function markdownLite(raw) {
+  return raw
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\*\*(.+?)\*\*/gs,'<strong>$1</strong>')
+    .replace(/\*([^*]+?)\*/gs,'<em>$1</em>')
+    .replace(/`([^`]+)`/g,'<code style="font-family:monospace;background:var(--surface2);padding:1px 5px;border-radius:3px;font-size:12px">$1</code>')
+    .replace(/\n/g,'<br>');
+}
+
+function appendChatMsg(role, text, sources) {
+  const welcome = $('chatWelcome');
+  if (welcome) welcome.remove();
+  const container = $('chatMessages');
+  const isUser = role === 'user';
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + (isUser ? 'user' : 'assistant');
+  let sourcesHtml = '';
+  if (sources && sources.length) {
+    const seen = new Set();
+    const tags = sources
+      .filter(s => s.file && s.page != null)
+      .map(s => {
+        const key = s.file + ':' + s.page;
+        if (seen.has(key)) return '';
+        seen.add(key);
+        const short = s.file.length > 32 ? '…' + s.file.slice(-29) : s.file;
+        return `<span class="chat-source-tag" title="${esc(s.file)}">${esc(short)} · p.${s.page}</span>`;
+      })
+      .filter(Boolean).join('');
+    if (tags) sourcesHtml = `<div class="chat-sources">${tags}</div>`;
+  }
+  const userAvatar = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+  const botAvatar  = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`;
+  div.innerHTML = `
+    <div class="chat-avatar">${isUser ? userAvatar : botAvatar}</div>
+    <div>
+      <div class="chat-bubble">${isUser ? esc(text) : markdownLite(text)}</div>
+      ${sourcesHtml}
+    </div>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+function appendTyping() {
+  const welcome = $('chatWelcome');
+  if (welcome) welcome.remove();
+  const container = $('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg assistant';
+  div.id = 'chatTyping';
+  div.innerHTML = `<div class="chat-avatar"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></div>
+    <div class="chat-bubble"><div class="chat-typing"><span></span><span></span><span></span></div></div>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+}
+
+async function sendChat() {
+  const input = $('chatInput');
+  const question = (input.value || '').trim();
+  if (!question) return;
+  const filterVal = ($('chatFilter') || {}).value || '';
+  const pdfFilter = filterVal ? [filterVal] : null;
+  input.value = '';
+  autoGrow(input);
+  $('chatSendBtn').disabled = true;
+  appendChatMsg('user', question, null);
+  appendTyping();
+  try {
+    const res = await fetch(`${API}/api/chat`, {
+      method: 'POST',
+      headers: { ...apiHdr(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, pdf_filter: pdfFilter })
+    });
+    const typing = $('chatTyping');
+    if (typing) typing.remove();
+    if (!res.ok) { appendChatMsg('assistant', `Error: HTTP ${res.status} — check API key or server logs.`, null); return; }
+    const data = await res.json();
+    appendChatMsg('assistant', data.answer, data.sources);
+  } catch (e) {
+    const typing = $('chatTyping');
+    if (typing) typing.remove();
+    appendChatMsg('assistant', `Error: ${e.message}`, null);
+  } finally {
+    $('chatSendBtn').disabled = false;
+    input.focus();
+  }
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+loadReports();
+</script>
+</body>
+</html>

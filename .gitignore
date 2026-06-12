@@ -1,0 +1,31 @@
+# Environment / secrets
+.env
+
+# Vector database (rebuilt locally via ingest)
+.chroma_db/
+
+# Structured extraction output
+extracted_data/
+
+# knowledge
+knowledge/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Claude Code internals
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

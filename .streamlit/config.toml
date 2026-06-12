@@ -1,0 +1,3 @@
+[server]
+# Disables module-path introspection that conflicts with torch.classes.__path__._path
+fileWatcherType = "none"
