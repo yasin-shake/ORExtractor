@@ -22,6 +22,7 @@ does not block the entire extraction.
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -314,6 +315,9 @@ def extract_report(
     return _merge_partials(filename, *partials)
 
 
+_EXTRACT_WORKERS = 5  # concurrent reports; tune down if hitting Bedrock TPM limits
+
+
 def extract_all(
     settings: Settings,
     vectorstore: Chroma,
@@ -321,6 +325,11 @@ def extract_all(
     skip_existing: bool = True,
 ) -> List[Tuple[str, NI43101Report]]:
     """Extract structured data for every PDF in the knowledge directory.
+
+    Reports are processed concurrently (_EXTRACT_WORKERS at a time).  Each
+    worker runs the four-pass extraction independently; real rate-limit errors
+    are caught by _invoke_with_backoff and retried with exponential back-off,
+    so no pre-emptive sleep is needed.
 
     Args:
         skip_existing: When True (default), PDFs whose extracted JSON already
@@ -342,14 +351,26 @@ def extract_all(
         to_process.append(pdf_path)
 
     results: List[Tuple[str, NI43101Report]] = []
-    bar = tqdm(to_process, desc="Extracting", unit="report")
-    for i, pdf_path in enumerate(bar):
+    bar = tqdm(total=len(to_process), desc="Extracting", unit="report")
+
+    def _worker(pdf_path: Path) -> Tuple[str, NI43101Report]:
         tqdm.write(f"  → {pdf_path.name}")
         report = extract_report(settings, vectorstore, llm, pdf_path.name)
-        results.append((pdf_path.name, report))
-        if i < len(to_process) - 1:
-            tqdm.write("  Cooling down 30s before next report …")
-            time.sleep(30)
+        return pdf_path.name, report
+
+    with ThreadPoolExecutor(max_workers=_EXTRACT_WORKERS) as pool:
+        futures = {pool.submit(_worker, p): p for p in to_process}
+        for future in as_completed(futures):
+            try:
+                name, report = future.result()
+                results.append((name, report))
+            except Exception as exc:
+                pdf_path = futures[future]
+                tqdm.write(f"  ✗ {pdf_path.name} failed: {exc}")
+            finally:
+                bar.update(1)
+
+    bar.close()
     return results
 
 

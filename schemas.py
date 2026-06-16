@@ -8,9 +8,21 @@ extractor must degrade gracefully (returning ``None``) when data is absent
 rather than fabricating values.
 """
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _coerce_to_list(v: Any) -> list:
+    """Coerce LLM list-field responses that arrive as bare strings or JSON 'null'."""
+    if v is None:
+        return []
+    if isinstance(v, str):
+        s = v.strip()
+        if not s or s.lower() == "null":
+            return []
+        return [s]
+    return v
 
 
 class GradeEntry(BaseModel):
@@ -97,6 +109,12 @@ class PropertyInfo(BaseModel):
         default_factory=list,
         description="Primary commodities of interest (e.g. gold, copper, lithium).",
     )
+
+    @field_validator("commodities", mode="before")
+    @classmethod
+    def _coerce_commodities(cls, v: Any) -> list:
+        return _coerce_to_list(v)
+
     tenure_status: Optional[str] = Field(
         None,
         description="Mineral tenure / claim / licence status and key permitting notes.",
@@ -137,6 +155,12 @@ class MineralResource(BaseModel):
             "Single-commodity rows will have one entry."
         ),
     )
+
+    @field_validator("grades", mode="before")
+    @classmethod
+    def _coerce_grades(cls, v: Any) -> list:
+        return _coerce_to_list(v)
+
     effective_date: Optional[str] = Field(
         None, description="Effective date of the resource estimate."
     )
@@ -168,6 +192,12 @@ class MineralReserve(BaseModel):
             "Single-commodity rows will have one entry."
         ),
     )
+
+    @field_validator("grades", mode="before")
+    @classmethod
+    def _coerce_grades(cls, v: Any) -> list:
+        return _coerce_to_list(v)
+
     effective_date: Optional[str] = Field(
         None, description="Effective date of the reserve estimate."
     )
@@ -235,6 +265,11 @@ class EconomicParameters(BaseModel):
         description="Commodity price assumptions used in the economic model.",
     )
 
+    @field_validator("metal_price_assumptions", mode="before")
+    @classmethod
+    def _coerce_metal_price_assumptions(cls, v: Any) -> list:
+        return _coerce_to_list(v)
+
 
 class GeologySummary(BaseModel):
     """Summary of the geological setting and mineralisation."""
@@ -273,6 +308,12 @@ class ExplorationSummary(BaseModel):
         default_factory=list,
         description="Types of drilling performed (e.g. diamond, RC, auger).",
     )
+
+    @field_validator("drilling_types", "notable_intercepts", "geophysical_surveys", mode="before")
+    @classmethod
+    def _coerce_str_lists(cls, v: Any) -> list:
+        return _coerce_to_list(v)
+
     last_program_date: Optional[str] = Field(
         None, description="Date or year of the most recent exploration/drill program."
     )
@@ -313,6 +354,11 @@ class MiningMethod(BaseModel):
         description="Key mining equipment or fleet listed in the report.",
     )
 
+    @field_validator("key_equipment", mode="before")
+    @classmethod
+    def _coerce_key_equipment(cls, v: Any) -> list:
+        return _coerce_to_list(v)
+
 
 class ProcessingMethod(BaseModel):
     """Processing / metallurgical method and plant parameters."""
@@ -328,6 +374,12 @@ class ProcessingMethod(BaseModel):
         default_factory=list,
         description="Metallurgical recovery by commodity (e.g. 'Cu: 92%', 'Au: 88%', 'Ag: 75%').",
     )
+
+    @field_validator("recoveries", mode="before")
+    @classmethod
+    def _coerce_recoveries(cls, v: Any) -> list:
+        return _coerce_to_list(v)
+
     concentrate_grade: Optional[str] = Field(
         None, description="Target concentrate grade specification, if applicable."
     )
@@ -375,6 +427,14 @@ class EnvironmentalSummary(BaseModel):
             "'Community blockades noted', 'Operating in conflict-affected region')."
         ),
     )
+
+    @field_validator(
+        "key_permits_required", "environmental_studies_completed", "political_risk_flags",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_env_lists(cls, v: Any) -> list:
+        return _coerce_to_list(v)
 
 
 class QualifiedPerson(BaseModel):
@@ -428,6 +488,11 @@ class NI43101Report(BaseModel):
         default_factory=list,
         description="Qualified Persons responsible for the report.",
     )
+
+    @field_validator("authors", "qualified_persons", mode="before")
+    @classmethod
+    def _coerce_author_lists(cls, v: Any) -> list:
+        return _coerce_to_list(v)
     property_info: Optional[PropertyInfo] = Field(
         None, description="Property / project location and ownership information."
     )
@@ -445,6 +510,11 @@ class NI43101Report(BaseModel):
         default_factory=list,
         description="Line items from the mineral reserve estimate.",
     )
+
+    @field_validator("mineral_resources", "mineral_reserves", mode="before")
+    @classmethod
+    def _coerce_mineral_lists(cls, v: Any) -> list:
+        return _coerce_to_list(v)
     economics: Optional[EconomicParameters] = Field(
         None, description="Project economic parameters."
     )

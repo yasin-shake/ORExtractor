@@ -8,6 +8,7 @@
 extracted_data/
 
 # knowledge
+knowledge/
 
 # Python
 __pycache__/

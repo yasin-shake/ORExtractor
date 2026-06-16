@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=1440">
-<title>NI 43-101 Dashboard</title>
+<title>ORExtractor</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -509,6 +509,49 @@ table.dt td.r,.rc-val{
 table.pf-table td,.pf-table th{padding:8px 10px}
 .pf-table tr{cursor:pointer}
 .pf-table tr:hover td{background:var(--nav-hover)}
+.pf-table th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+.pf-table th.sortable:hover{color:var(--accent)}
+.pf-table th .sort-arrow{font-size:9px;margin-left:3px;opacity:.5}
+.pf-table th.sort-active .sort-arrow{opacity:1;color:var(--accent)}
+.pf-table input[type=checkbox]{cursor:pointer;accent-color:var(--accent)}
+.sb-search{position:relative}
+.sb-search-dropdown{
+  position:absolute;left:10px;right:10px;top:100%;margin-top:4px;
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;
+  box-shadow:var(--shadow-md);max-height:220px;overflow-y:auto;z-index:60;display:none;
+}
+.sb-search-dropdown.open{display:block}
+.sb-search-item{padding:8px 12px;font-size:12px;cursor:pointer;border-bottom:1px solid var(--border)}
+.sb-search-item:last-child{border-bottom:none}
+.sb-search-item:hover{background:var(--nav-hover)}
+.sb-search-item-sub{font-size:10px;color:var(--muted);margin-top:2px}
+.home-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px}
+@media(max-width:900px){.home-grid{grid-template-columns:1fr}}
+.home-list{display:flex;flex-direction:column;gap:6px}
+.home-list-item{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:10px 12px;background:var(--surface2);border:1px solid var(--border);
+  border-radius:8px;cursor:pointer;font-size:13px;transition:background .12s;
+}
+.home-list-item:hover{background:var(--nav-hover)}
+.home-list-item strong{color:var(--text)}
+.home-list-item span{color:var(--muted);font-size:11px}
+.scatter-wrap{width:100%;overflow:hidden}
+.scatter-wrap svg{display:block;width:100%;height:auto}
+.compare-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.compare-col{
+  background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:16px;box-shadow:var(--shadow);
+}
+.compare-col-title{font-size:14px;font-weight:700;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+.compare-row{display:flex;justify-content:space-between;padding:6px 0;font-size:12px;border-bottom:1px solid var(--border)}
+.compare-row:last-child{border-bottom:none}
+.compare-lbl{color:var(--text2)}
+.compare-val{font-weight:600;text-align:right;max-width:55%}
+.nav-badge{
+  margin-left:auto;font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px;
+  background:var(--accent);color:#fff;
+}
 </style>
 </head>
 <body>
@@ -525,26 +568,35 @@ table.pf-table td,.pf-table th{padding:8px 10px}
       </svg>
     </div>
     <div>
-      <div class="sb-logo-name">NI 43-101</div>
-      <div class="sb-logo-sub">AI Extraction</div>
+      <div class="sb-logo-name">ORExtractor</div>
+      <div class="sb-logo-sub">NI 43-101 Intelligence</div>
     </div>
   </div>
 
   <div class="sb-search">
     <div class="sb-search-box">
       <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 20 20"><circle cx="9" cy="9" r="6"/><path d="M15 15l3 3"/></svg>
-      <input type="text" placeholder="Search here…">
+      <input type="text" id="sbSearch" placeholder="Search reports…" oninput="onSidebarSearch()" onfocus="onSidebarSearch()" onblur="hideSearchDropdown()">
     </div>
+    <div class="sb-search-dropdown" id="sbSearchDropdown"></div>
   </div>
 
   <div class="sb-section">Main Menu</div>
-  <a class="nav-item active" onclick="navTo('overview',this)">
+  <a class="nav-item active" onclick="navTo('home',this)">
     <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span>
     Dashboard
   </a>
   <a class="nav-item" onclick="navTo('portfolio',this)">
     <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><line x1="12" y1="12" x2="12" y2="16"/><line x1="10" y1="14" x2="14" y2="14"/></svg></span>
     Portfolio
+  </a>
+  <a class="nav-item" id="navCompare" onclick="navTo('compare',this)" style="display:none">
+    <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg></span>
+    Compare <span class="nav-badge" id="compareBadge">0</span>
+  </a>
+  <a class="nav-item" onclick="navTo('overview',this)">
+    <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>
+    Report Detail
   </a>
   <a class="nav-item" onclick="navTo('resources',this)">
     <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg></span>
@@ -592,7 +644,7 @@ table.pf-table td,.pf-table th{padding:8px 10px}
 <!-- ── Main ──────────────────────────────────────────────────────────── -->
 <div class="main">
   <header class="topbar">
-    <div class="topbar-title" id="pageTitle">Dashboard</div>
+    <div class="topbar-title" id="pageTitle">ORExtractor</div>
     <div class="topbar-right">
       <input type="password" id="apiKeyInput" placeholder="API key (optional)">
       <select id="reportSelect" onchange="onSelect()">
@@ -608,11 +660,67 @@ table.pf-table td,.pf-table th{padding:8px 10px}
 
   <div class="content">
 
-    <!-- ── Overview ─────────────────────────────── -->
-    <div id="page-overview" class="page active">
+    <!-- ── Home (portfolio overview) ──────────────── -->
+    <div id="page-home" class="page active">
+      <div class="welcome" id="homeWelcome">
+        <div class="welcome-title">ORExtractor</div>
+        <div class="welcome-sub">Portfolio intelligence across your indexed NI 43-101 reports</div>
+      </div>
+      <div class="kpi-grid" id="homeKpiGrid"></div>
+      <div class="home-grid">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="card-icon" id="homeCommodityIcon"></span>Commodity Distribution</div>
+          </div>
+          <div class="card-body" id="homeCommodityChart"></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="card-icon" id="homeStageIcon"></span>Project Stage Breakdown</div>
+          </div>
+          <div class="card-body" id="homeStageChart"></div>
+        </div>
+      </div>
+      <div class="home-grid">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="card-icon" id="homeCountryIcon"></span>Top Countries</div>
+          </div>
+          <div class="card-body" id="homeCountryChart"></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title"><span class="card-icon" id="homeNpvIcon"></span>Top 10 by Post-Tax NPV</div>
+          </div>
+          <div class="card-body" id="homeTopNpv"></div>
+        </div>
+      </div>
+      <div class="card g1" style="margin-bottom:18px">
+        <div class="card-header">
+          <div class="card-title"><span class="card-icon" id="homeGtIcon"></span>Grade vs Tonnage (M+I resources)</div>
+          <span class="card-badge">Click bubble to open report</span>
+        </div>
+        <div class="card-body scatter-wrap" id="homeGradeTonnage"></div>
+      </div>
+      <div class="card g1" style="margin-bottom:18px">
+        <div class="card-header">
+          <div class="card-title"><span class="card-icon" id="homeScatterIcon"></span>NPV vs Initial CapEx</div>
+        </div>
+        <div class="card-body scatter-wrap" id="homeNpvCapex"></div>
+      </div>
+      <div class="card g1">
+        <div class="card-header">
+          <div class="card-title"><span class="card-icon" id="homeRecentIcon"></span>Recent Reports</div>
+        </div>
+        <div class="card-body home-list" id="homeRecentList"></div>
+      </div>
+    </div>
+
+    <!-- ── Overview (single report) ─────────────── -->
+    <div id="page-overview" class="page">
       <div class="welcome" id="welcome">
         <div class="welcome-title">Welcome — select a report above</div>
-        <div class="welcome-sub">AI-extracted NI 43-101 structured data · Resources · Economics · Geology</div>
+        <div class="welcome-sub">Structured extraction · Resources · Economics · Geology</div>
       </div>
       <div class="kpi-grid" id="kpiGrid">
         <!-- populated by JS -->
@@ -681,18 +789,28 @@ table.pf-table td,.pf-table th{padding:8px 10px}
         <select id="pfCountry"   onchange="renderPortfolio()"><option value="">All countries</option></select>
         <select id="pfStage"     onchange="renderPortfolio()"><option value="">All stages</option></select>
         <input  type="text" id="pfSearch" placeholder="Search project / company…" oninput="renderPortfolio()">
+        <button class="btn" onclick="exportPortfolioCSV()">↓ Export CSV</button>
         <span class="pf-count" id="pfCount"></span>
       </div>
       <div class="table-wrap">
         <table class="dt pf-table" id="pfTable">
           <thead><tr>
+            <th style="width:32px"></th>
             <th>Project</th><th>Company</th><th>Country</th><th>Stage</th>
-            <th>Commodity</th><th class="r">M+I Tonnes</th>
-            <th class="r">NPV</th><th class="r">Mine Life</th><th>Report Date</th>
+            <th>Commodity</th>
+            <th class="r sortable" data-sort="mi" onclick="sortPortfolio('mi')">M+I Tonnes <span class="sort-arrow" id="sortMi"></span></th>
+            <th class="r sortable" data-sort="npv" onclick="sortPortfolio('npv')">NPV <span class="sort-arrow" id="sortNpv"></span></th>
+            <th class="r sortable" data-sort="life" onclick="sortPortfolio('life')">Mine Life <span class="sort-arrow" id="sortLife"></span></th>
+            <th>Report Date</th>
           </tr></thead>
-          <tbody id="pfTbody"><tr><td colspan="9" class="empty-pg">Loading…</td></tr></tbody>
+          <tbody id="pfTbody"><tr><td colspan="10" class="empty-pg">Loading…</td></tr></tbody>
         </table>
       </div>
+    </div>
+
+    <!-- ── Compare ───────────────────────────────── -->
+    <div id="page-compare" class="page">
+      <div id="comparePage"></div>
     </div>
 
     <!-- ── Map ───────────────────────────────────── -->
@@ -712,7 +830,7 @@ table.pf-table td,.pf-table th{padding:8px 10px}
         <div class="chat-messages" id="chatMessages">
           <div class="chat-welcome" id="chatWelcome">
             <div class="chat-welcome-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
-            <div class="chat-welcome-title">Ask anything about your NI 43-101 reports</div>
+            <div class="chat-welcome-title">Ask ORExtractor anything about your reports</div>
             <div class="chat-welcome-sub">Answers drawn from your full knowledge base · source pages cited below each reply</div>
             <div class="chat-suggestions">
               <button class="chat-suggestion" onclick="fillChat('What are the total mineral resources across all reports?')">Total mineral resources?</button>
@@ -731,7 +849,7 @@ table.pf-table td,.pf-table th{padding:8px 10px}
               </select>
               <button class="btn" style="padding:3px 10px;font-size:12px" onclick="clearChat()">Clear</button>
             </div>
-            <textarea id="chatInput" placeholder="Ask a question about the NI 43-101 reports…" rows="1"
+            <textarea id="chatInput" placeholder="Ask ORExtractor about NI 43-101 reports…" rows="1"
               onkeydown="chatKeydown(event)" oninput="autoGrow(this)"></textarea>
           </div>
           <button class="chat-send-btn" id="chatSendBtn" onclick="sendChat()" title="Send (Enter)">
@@ -752,6 +870,9 @@ table.pf-table td,.pf-table th{padding:8px 10px}
 // ── Config ────────────────────────────────────────────────────────────────
 const API = location.protocol === 'file:' ? 'http://localhost:8000' : location.origin;
 let reports = [], current = null, dark = false;
+let compareSet = new Set();
+const MAX_COMPARE = 4;
+let pfSort = { key: 'mi', dir: -1 };
 
 // ── SVG icon library ──────────────────────────────────────────────────────
 const IC = (d,extra='') => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ${extra}>${d}</svg>`;
@@ -785,7 +906,8 @@ function toggleTheme() {
 
 // ── Navigation ────────────────────────────────────────────────────────────
 const PAGE_TITLES = {
-  overview:'Dashboard', portfolio:'Portfolio Screener',
+  home:'ORExtractor', overview:'Report Detail', portfolio:'Portfolio Screener',
+  compare:'Compare Reports',
   resources:'Resources & Reserves', economics:'Economics',
   property:'Property & Geology', exploration:'Exploration & QPs',
   map:'Project Map', chat:'Chat'
@@ -796,14 +918,16 @@ function navTo(page, el) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   const pg = document.getElementById('page-' + page);
   if (pg) pg.classList.add('active');
-  document.getElementById('pageTitle').textContent = PAGE_TITLES[page] || 'Dashboard';
-  const globalPage = page === 'chat' || page === 'portfolio' || page === 'map';
-  $('reportSelect').style.display   = globalPage ? 'none' : '';
-  $('extractAllBtn').style.display  = globalPage ? 'none' : '';
-  $('extractSelBtn').style.display  = (!globalPage && current) ? '' : 'none';
-  if (!globalPage && current) renderSection(page);
+  document.getElementById('pageTitle').textContent = PAGE_TITLES[page] || 'ORExtractor';
+  const hideSelect = page === 'chat' || page === 'portfolio' || page === 'map' || page === 'compare';
+  $('reportSelect').style.display = hideSelect ? 'none' : '';
+  $('extractAllBtn').style.display = hideSelect ? 'none' : '';
+  $('extractSelBtn').style.display  = (page === 'overview' && current) ? '' : 'none';
+  if (['resources','economics','property','exploration'].includes(page) && current) renderSection(page);
+  if (page === 'home')      renderHome();
   if (page === 'portfolio') renderPortfolio();
   if (page === 'map')       renderMap();
+  if (page === 'compare')   renderCompare();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -892,6 +1016,124 @@ function sumGroup(rows) {
     grade_unit:g0?.grade_unit||'', metal_unit:g0?.contained_metal_unit||'' };
 }
 
+// ── Canonicalization & parsing ────────────────────────────────────────────
+const STAGE_LABELS = {
+  operating:'Operating', construction:'Construction', feasibility:'Feasibility',
+  prefeasibility:'Pre-Feasibility', pea:'PEA', care:'Care & Maintenance',
+  exploration:'Exploration', default:'Other',
+};
+const COMM_ALIASES = {
+  au:'Gold', gold:'Gold', cu:'Copper', copper:'Copper', ag:'Silver', silver:'Silver',
+  li:'Lithium', lithium:'Lithium', ni:'Nickel', nickel:'Nickel', zn:'Zinc', zinc:'Zinc',
+  pb:'Lead', lead:'Lead', fe:'Iron', iron:'Iron', co:'Cobalt', cobalt:'Cobalt',
+  mo:'Molybdenum', molybdenum:'Molybdenum', u:'Uranium', uranium:'Uranium', u3o8:'Uranium',
+};
+function canonCountry(s) {
+  if (!s) return '';
+  const l = s.trim().toLowerCase();
+  if (['usa','us','u.s.','u.s.a.','united states of america'].includes(l)) return 'United States';
+  if (l.includes('democratic republic of congo') || l === 'drc') return 'DRC';
+  if (l === 'uk' || l === 'united kingdom') return 'United Kingdom';
+  return s.trim();
+}
+function canonStage(s) {
+  if (!s) return 'Other';
+  return STAGE_LABELS[stageKey(s)] || 'Other';
+}
+function canonCommodity(s) {
+  if (!s) return '';
+  const k = s.toLowerCase().replace(/[^a-z0-9]/g,'');
+  for (const [key, label] of Object.entries(COMM_ALIASES)) {
+    if (k === key || k.startsWith(key)) return label;
+  }
+  return s.trim();
+}
+function parseMoney(str) {
+  if (!str || typeof str !== 'string') return { value: null, currency: null, raw: str || '' };
+  const raw = str.trim();
+  let currency = 'USD';
+  if (/C\$|CAD|canadian/i.test(raw)) currency = 'CAD';
+  else if (/A\$|AUD|australian/i.test(raw)) currency = 'AUD';
+  else if (/EUR|€|euro/i.test(raw)) currency = 'EUR';
+  const m = raw.replace(/,/g,'').match(/([\d]+(?:\.\d+)?)/);
+  if (!m) return { value: null, currency, raw };
+  let val = parseFloat(m[1]);
+  const lower = raw.toLowerCase();
+  if (/\b(billion|bn)\b|[\d.]+\s*b\b/i.test(lower) && !/million|mln/i.test(lower)) val *= 1000;
+  else if (/\b(thousand|k)\b/i.test(lower) && !/million|billion/i.test(lower)) val /= 1000;
+  return { value: val, currency, raw };
+}
+function parsePercent(str) {
+  if (!str) return null;
+  const m = String(str).match(/([\d.]+)\s*%?/);
+  return m ? parseFloat(m[1]) : null;
+}
+function reportNpv(d) {
+  const raw = d.economics?.post_tax_npv || d.economics?.pre_tax_npv || '';
+  return parseMoney(raw);
+}
+function reportCapex(d) {
+  return parseMoney(d.economics?.initial_capex || '');
+}
+function weightedMiGrade(d) {
+  const rows = (d.mineral_resources||[]).filter(r=>/measured|indicated/i.test(r.category||''));
+  let tw=0, gw=0;
+  for (const r of rows) {
+    const g = primaryGrade(r);
+    const t = r.tonnes||0;
+    tw += t;
+    gw += (g.grade_value||0)*t;
+  }
+  return tw>0 ? gw/tw : null;
+}
+function barChartHtml(items, maxVal) {
+  if (!items.length) return '<div class="empty-pg">No data</div>';
+  const max = maxVal || Math.max(...items.map(i=>i.count), 1);
+  return `<div class="res-chart">${items.map(it=>{
+    const pct = Math.max(it.count/max*100, 2).toFixed(1);
+    return `<div class="rc-row">
+      <div class="rc-labels"><span class="rc-cat">${esc(it.label)}</span><span class="rc-val">${it.count}</span></div>
+      <div class="rc-track"><div class="rc-fill measured" style="width:${pct}%${it.color?`;background:${it.color}`:''}"></div></div>
+    </div>`;
+  }).join('')}</div>`;
+}
+function svgScatter(points, opts) {
+  const W=opts.width||560, H=opts.height||280;
+  const pad={l:52,r:16,t:16,b:36};
+  const plotW=W-pad.l-pad.r, plotH=H-pad.t-pad.b;
+  if (!points.length) return '<div class="empty-pg">No data points</div>';
+  const xs=points.map(p=>p.x).filter(v=>v>0), ys=points.map(p=>p.y).filter(v=>v!=null&&v>0);
+  if (!xs.length||!ys.length) return '<div class="empty-pg">Insufficient numeric data</div>';
+  const xMin=opts.logX?Math.min(...xs):0, xMax=Math.max(...xs);
+  const yMin=0, yMax=Math.max(...ys)*1.05;
+  const xScale=v=>{
+    if (opts.logX) {
+      const lo=Math.log10(Math.max(xMin,1)), hi=Math.log10(Math.max(xMax,1));
+      return pad.l+((Math.log10(Math.max(v,1))-lo)/(hi-lo||1))*plotW;
+    }
+    return pad.l+((v-xMin)/(xMax-xMin||1))*plotW;
+  };
+  const yScale=v=>pad.t+plotH-((v-yMin)/(yMax-yMin||1))*plotH;
+  const bubbles=points.map((p,i)=>{
+    const cx=xScale(p.x), cy=yScale(p.y);
+    const r=Math.max(5, Math.min(18, 5+Math.sqrt((p.size||p.x)/1e6)));
+    const col=p.color||'#10B981';
+    const tip=esc(p.label||'');
+    return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r}" fill="${col}" fill-opacity="0.65" stroke="${col}" stroke-width="1.5" style="cursor:pointer" onclick="scatterClick(${JSON.stringify(p.id||'')})"><title>${tip}</title></circle>`;
+  }).join('');
+  const xLabel=esc(opts.xLabel||'X'), yLabel=esc(opts.yLabel||'Y');
+  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img">
+    <text x="${pad.l}" y="${H-8}" font-size="10" fill="var(--muted)">${xLabel}</text>
+    <text x="8" y="${pad.t+plotH/2}" font-size="10" fill="var(--muted)" transform="rotate(-90 12 ${pad.t+plotH/2})">${yLabel}</text>
+    <line x1="${pad.l}" y1="${pad.t+plotH}" x2="${W-pad.r}" y2="${pad.t+plotH}" stroke="var(--border)"/>
+    <line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${pad.t+plotH}" stroke="var(--border)"/>
+    ${bubbles}
+  </svg>`;
+}
+function scatterClick(filename) {
+  if (filename) selectFromPortfolio(filename);
+}
+
 // ── API ───────────────────────────────────────────────────────────────────
 function apiHdr() {
   const k = ($('apiKeyInput')||{}).value||'';
@@ -920,6 +1162,7 @@ async function loadReports() {
     const cf = $('chatFilter');
     if (cf) cf.innerHTML = '<option value="">All reports</option>' + opts;
     populateFilterDropdowns();
+    renderHome();
   } catch(e) {
     setMsg(`Cannot reach API at ${API} — ${e.message}`, 'error');
     sel.innerHTML = '<option value="">Error loading</option>';
@@ -927,10 +1170,13 @@ async function loadReports() {
 }
 function onSelect() {
   const name = $('reportSelect').value;
-  $('extractSelBtn').style.display = name ? '' : 'none';
   if (!name) { current=null; return; }
   current = reports.find(r=>r.source_file===name)||null;
-  if (current) { renderOverview(current); }
+  if (current) {
+    $('extractSelBtn').style.display = '';
+    navTo('overview', document.querySelector('.nav-item[onclick*="overview"]'));
+    renderOverview(current);
+  }
 }
 async function extractAll() {
   const btn = $('extractAllBtn');
@@ -1027,9 +1273,9 @@ function miTonnes(d) {
 function populateFilterDropdowns() {
   const allCommodities = new Set(), allCountries = new Set(), allStages = new Set();
   for (const r of reports) {
-    (r.property_info?.commodities||[]).forEach(c=>allCommodities.add(c));
-    if (r.property_info?.country) allCountries.add(r.property_info.country);
-    if (r.property_info?.project_stage) allStages.add(r.property_info.project_stage);
+    (r.property_info?.commodities||[]).forEach(c=>allCommodities.add(canonCommodity(c)));
+    if (r.property_info?.country) allCountries.add(canonCountry(r.property_info.country));
+    if (r.property_info?.project_stage) allStages.add(canonStage(r.property_info.project_stage));
   }
   ['pfCommodity','mapCommodity'].forEach(id=>{
     const el=$( id); if(!el) return;
@@ -1059,44 +1305,96 @@ function filterReports() {
   const stg  = ($('pfStage')||{}).value||'';
   const q    = (($('pfSearch')||{}).value||'').toLowerCase();
   return reports.filter(r=>{
-    if(comm && !(r.property_info?.commodities||[]).map(c=>c.toLowerCase()).some(c=>c.includes(comm.toLowerCase()))) return false;
-    if(ctry && (r.property_info?.country||'').toLowerCase()!==ctry.toLowerCase()) return false;
-    if(stg  && (r.property_info?.project_stage||'').toLowerCase()!==stg.toLowerCase()) return false;
+    const prop = r.property_info||{};
+    if(comm && !(prop.commodities||[]).map(c=>canonCommodity(c).toLowerCase()).some(c=>c.includes(comm.toLowerCase()))) return false;
+    if(ctry && canonCountry(prop.country||'').toLowerCase()!==ctry.toLowerCase()) return false;
+    if(stg  && canonStage(prop.project_stage||'').toLowerCase()!==stg.toLowerCase()) return false;
     if(q){
-      const blob=[r.report_title,r.issuer,r.property_info?.project_name,
-        r.property_info?.country,r.source_file].filter(Boolean).join(' ').toLowerCase();
+      const blob=[r.report_title,r.issuer,prop.project_name,
+        prop.country,r.source_file].filter(Boolean).join(' ').toLowerCase();
       if(!blob.includes(q)) return false;
     }
     return true;
   });
 }
+function sortPortfolio(key) {
+  if (pfSort.key === key) pfSort.dir *= -1;
+  else { pfSort.key = key; pfSort.dir = -1; }
+  renderPortfolio();
+}
+function updateSortHeaders() {
+  ['mi','npv','life'].forEach(k=>{
+    const el = $('sort'+k.charAt(0).toUpperCase()+k.slice(1));
+    const th = document.querySelector(`th[data-sort="${k}"]`);
+    if (th) th.classList.toggle('sort-active', pfSort.key===k);
+    if (el) el.textContent = pfSort.key===k ? (pfSort.dir>0?'▲':'▼') : '';
+  });
+}
+function sortFilteredReports(list) {
+  const key = pfSort.key, dir = pfSort.dir;
+  return [...list].sort((a,b)=>{
+    let va=0, vb=0;
+    if (key==='mi') { va=miTonnes(a); vb=miTonnes(b); }
+    else if (key==='npv') { va=reportNpv(a).value||0; vb=reportNpv(b).value||0; }
+    else if (key==='life') { va=a.economics?.mine_life_years||0; vb=b.economics?.mine_life_years||0; }
+    return (va-vb)*dir;
+  });
+}
+function toggleCompare(filename, checked, ev) {
+  if (ev) ev.stopPropagation();
+  if (checked) {
+    if (compareSet.size >= MAX_COMPARE) {
+      alert('You can compare up to 4 reports at a time.');
+      if (ev) ev.target.checked = false;
+      return;
+    }
+    compareSet.add(filename);
+  } else compareSet.delete(filename);
+  updateCompareNav();
+  renderPortfolio();
+}
+function updateCompareNav() {
+  const nav = $('navCompare');
+  const badge = $('compareBadge');
+  if (!nav) return;
+  if (compareSet.size > 0) {
+    nav.style.display = '';
+    if (badge) badge.textContent = String(compareSet.size);
+  } else nav.style.display = 'none';
+}
 function renderPortfolio() {
   populateFilterDropdowns();
-  const filtered = filterReports();
+  let filtered = filterReports();
+  filtered = sortFilteredReports(filtered);
+  updateSortHeaders();
   $('pfCount').textContent = `${filtered.length} of ${reports.length} reports`;
   const tbody=$('pfTbody');
   if(!filtered.length){
-    tbody.innerHTML='<tr><td colspan="9" class="empty-pg">No reports match the current filters</td></tr>';
+    tbody.innerHTML='<tr><td colspan="10" class="empty-pg">No reports match the current filters</td></tr>';
     return;
   }
   tbody.innerHTML = filtered.map(r=>{
     const prop = r.property_info||{};
-    const comms = (prop.commodities||[]).map(c=>`<span class="comm-chip">${esc(c)}</span>`).join('');
+    const comms = (prop.commodities||[]).map(c=>`<span class="comm-chip">${esc(canonCommodity(c))}</span>`).join('');
     const sk = stageKey(prop.project_stage);
+    const stageLabel = canonStage(prop.project_stage);
     const stage = prop.project_stage
-      ? `<span class="stage-chip ${sk}">${esc(prop.project_stage)}</span>` : '—';
+      ? `<span class="stage-chip ${sk}">${esc(stageLabel)}</span>` : '—';
     const mi = miTonnes(r);
     const miStr = mi>0 ? fmtTp(mi) : '<span class="null">—</span>';
-    const npv   = r.economics?.post_tax_npv||r.economics?.pre_tax_npv||null;
+    const npvRaw = r.economics?.post_tax_npv||r.economics?.pre_tax_npv||null;
     const life  = r.economics?.mine_life_years;
-    return `<tr onclick="selectFromPortfolio('${esc(r.source_file||'')}')">
+    const checked = compareSet.has(r.source_file) ? 'checked' : '';
+    const fname = esc(r.source_file||'');
+    return `<tr onclick="selectFromPortfolio('${fname}')">
+      <td onclick="event.stopPropagation()"><input type="checkbox" ${checked} onchange="toggleCompare('${fname}', this.checked, event)"></td>
       <td><strong>${esc(prop.project_name||r.report_title||r.source_file||'—')}</strong></td>
       <td>${esc(r.issuer||'—')}</td>
-      <td>${esc(prop.country||'—')}</td>
+      <td>${esc(canonCountry(prop.country||'')||'—')}</td>
       <td>${stage}</td>
       <td>${comms||'<span class="null">—</span>'}</td>
       <td class="r">${miStr}</td>
-      <td class="r">${npv?esc(npv):'<span class="null">—</span>'}</td>
+      <td class="r">${npvRaw?esc(npvRaw):'<span class="null">—</span>'}</td>
       <td class="r">${life!=null?life+' yr':'<span class="null">—</span>'}</td>
       <td>${esc(r.report_date||'—')}</td>
     </tr>`;
@@ -1108,9 +1406,209 @@ function selectFromPortfolio(filename) {
   current = r;
   const sel = $('reportSelect');
   sel.value = filename;
-  $('extractSelBtn').style.display = '';
-  navTo('overview', document.querySelector('.nav-item'));
+  navTo('overview', document.querySelector('.nav-item[onclick*="overview"]'));
   renderOverview(current);
+}
+
+// ── Sidebar search ────────────────────────────────────────────────────────
+function onSidebarSearch() {
+  const q = ($('sbSearch')||{}).value||'';
+  const dd = $('sbSearchDropdown');
+  if (!dd) return;
+  const needle = q.trim().toLowerCase();
+  if (!needle || !reports.length) { dd.classList.remove('open'); dd.innerHTML=''; return; }
+  const hits = reports.filter(r=>{
+    const blob=[r.report_title,r.issuer,r.property_info?.project_name,r.source_file].filter(Boolean).join(' ').toLowerCase();
+    return blob.includes(needle);
+  }).slice(0,12);
+  if (!hits.length) { dd.classList.remove('open'); return; }
+  dd.innerHTML = hits.map(r=>{
+    const title = r.property_info?.project_name || r.report_title || r.source_file;
+    const sub = [r.issuer, r.property_info?.country].filter(Boolean).join(' · ');
+    return `<div class="sb-search-item" onmousedown="pickSearchReport('${esc(r.source_file||'')}')">
+      <div>${esc(title)}</div>${sub?`<div class="sb-search-item-sub">${esc(sub)}</div>`:''}
+    </div>`;
+  }).join('');
+  dd.classList.add('open');
+}
+function hideSearchDropdown() {
+  setTimeout(()=>{ const dd=$('sbSearchDropdown'); if(dd) dd.classList.remove('open'); }, 150);
+}
+function pickSearchReport(filename) {
+  $('sbSearch').value = '';
+  $('sbSearchDropdown').classList.remove('open');
+  selectFromPortfolio(filename);
+}
+
+// ── Home (portfolio overview) ─────────────────────────────────────────────
+function renderHome() {
+  if (!reports.length) return;
+  const n = reports.length;
+  const withRes = reports.filter(r=>(r.mineral_resources||[]).length).length;
+  const withEcon = reports.filter(r=>r.economics&&(r.economics.post_tax_npv||r.economics.pre_tax_npv)).length;
+  const countries = new Set(reports.map(r=>canonCountry(r.property_info?.country||'')).filter(Boolean));
+  const commodities = new Set();
+  reports.forEach(r=>(r.property_info?.commodities||[]).forEach(c=>commodities.add(canonCommodity(c))));
+
+  $('homeWelcome').innerHTML = `
+    <div class="welcome-title">ORExtractor</div>
+    <div class="welcome-sub"><strong>${n}</strong> NI 43-101 reports indexed · click any chart item or recent report to open detail</div>`;
+
+  const kpis = [
+    {icon:SVG.fileText,  label:'Total Reports', value:String(n), sub:''},
+    {icon:SVG.layers,    label:'With Resources', value:String(withRes), sub:`${Math.round(withRes/n*100)}% of portfolio`},
+    {icon:SVG.trendUp,   label:'With Economics', value:String(withEcon), sub:`${Math.round(withEcon/n*100)}% of portfolio`},
+    {icon:SVG.mapPin,    label:'Countries', value:String(countries.size), sub:''},
+    {icon:SVG.coin,      label:'Commodities', value:String(commodities.size), sub:''},
+    {icon:SVG.mountain,  label:'Geo-located', value:String(reports.filter(r=>r.property_info?.latitude!=null).length), sub:'with coordinates'},
+  ];
+  $('homeKpiGrid').innerHTML = kpis.map(k=>`
+    <div class="kpi-card">
+      <div class="kpi-icon">${k.icon}</div>
+      <div class="kpi-label">${k.label}</div>
+      <div class="kpi-value">${esc(k.value)}</div>
+      ${k.sub?`<div class="kpi-sub">${esc(k.sub)}</div>`:''}
+    </div>`).join('');
+
+  if ($('homeCommodityIcon')) $('homeCommodityIcon').innerHTML = SVG.layers;
+  if ($('homeStageIcon')) $('homeStageIcon').innerHTML = SVG.barChart;
+  if ($('homeCountryIcon')) $('homeCountryIcon').innerHTML = SVG.mapPin;
+  if ($('homeNpvIcon')) $('homeNpvIcon').innerHTML = SVG.trendUp;
+  if ($('homeGtIcon')) $('homeGtIcon').innerHTML = SVG.layers;
+  if ($('homeScatterIcon')) $('homeScatterIcon').innerHTML = SVG.barChart;
+  if ($('homeRecentIcon')) $('homeRecentIcon').innerHTML = SVG.fileText;
+
+  const commCounts = {};
+  reports.forEach(r=>(r.property_info?.commodities||[]).forEach(c=>{
+    const k=canonCommodity(c); commCounts[k]=(commCounts[k]||0)+1;
+  }));
+  const commItems = Object.entries(commCounts).sort((a,b)=>b[1]-a[1]).slice(0,10)
+    .map(([label,count])=>({label,count,color:commodityColor(label)}));
+  $('homeCommodityChart').innerHTML = barChartHtml(commItems);
+
+  const stageCounts = {};
+  reports.forEach(r=>{ const s=canonStage(r.property_info?.project_stage); stageCounts[s]=(stageCounts[s]||0)+1; });
+  const stageItems = Object.entries(stageCounts).sort((a,b)=>b[1]-a[1])
+    .map(([label,count])=>({label,count}));
+  $('homeStageChart').innerHTML = barChartHtml(stageItems);
+
+  const countryCounts = {};
+  reports.forEach(r=>{ const c=canonCountry(r.property_info?.country||''); if(c) countryCounts[c]=(countryCounts[c]||0)+1; });
+  const countryItems = Object.entries(countryCounts).sort((a,b)=>b[1]-a[1]).slice(0,10)
+    .map(([label,count])=>({label,count}));
+  $('homeCountryChart').innerHTML = barChartHtml(countryItems);
+
+  const topNpv = reports.map(r=>({r, npv:reportNpv(r)})).filter(x=>x.npv.value!=null)
+    .sort((a,b)=>(b.npv.value-a.npv.value)).slice(0,10);
+  $('homeTopNpv').innerHTML = topNpv.length ? `<div class="home-list">${topNpv.map(({r,npv})=>{
+    const name = r.property_info?.project_name||r.report_title||r.source_file;
+    return `<div class="home-list-item" onclick="selectFromPortfolio('${esc(r.source_file||'')}')">
+      <strong>${esc(name)}</strong>
+      <span>${esc(npv.raw)}</span>
+    </div>`;
+  }).join('')}</div>` : '<div class="empty-pg">No NPV data extracted</div>';
+
+  renderGradeTonnage($('homeGradeTonnage'));
+
+  const npvCapexPts = reports.map(r=>{
+    const npv=reportNpv(r), cap=reportCapex(r);
+    if (npv.value==null||cap.value==null) return null;
+    const prop=r.property_info||{};
+    const primary=(prop.commodities||[])[0]||'';
+    return {x:cap.value, y:npv.value, size:cap.value, color:commodityColor(canonCommodity(primary)),
+      label:(prop.project_name||r.report_title||r.source_file)+' — NPV '+npv.raw,
+      id:r.source_file};
+  }).filter(Boolean);
+  $('homeNpvCapex').innerHTML = svgScatter(npvCapexPts, {logX:false, xLabel:'Initial CapEx (M)', yLabel:'NPV (M)'});
+
+  const recent = [...reports].sort((a,b)=>{
+    const da=a.report_date||'', db=b.report_date||'';
+    return db.localeCompare(da);
+  }).slice(0,12);
+  $('homeRecentList').innerHTML = recent.map(r=>{
+    const name = r.property_info?.project_name||r.report_title||r.source_file;
+    const sub = [r.issuer, r.report_date].filter(Boolean).join(' · ');
+    return `<div class="home-list-item" onclick="selectFromPortfolio('${esc(r.source_file||'')}')">
+      <div><strong>${esc(name)}</strong>${sub?`<div style="font-size:11px;color:var(--muted);margin-top:2px">${esc(sub)}</div>`:''}</div>
+      <span>${esc(canonStage(r.property_info?.project_stage)||'')}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderGradeTonnage(container) {
+  if (!container) return;
+  const pts = reports.map(r=>{
+    const mi = miTonnes(r);
+    const grade = weightedMiGrade(r);
+    if (mi<=0 || grade==null) return null;
+    const prop = r.property_info||{};
+    const primary = (prop.commodities||[])[0]||'';
+    return {x:mi, y:grade, size:mi, color:commodityColor(canonCommodity(primary)),
+      label:(prop.project_name||r.report_title||r.source_file)+' — '+fmtTp(mi),
+      id:r.source_file};
+  }).filter(Boolean);
+  container.innerHTML = svgScatter(pts, {logX:true, xLabel:'M+I Tonnes', yLabel:'Weighted Grade'});
+}
+
+function renderCompare() {
+  const el = $('comparePage');
+  if (!el) return;
+  const selected = [...compareSet].map(f=>reports.find(r=>r.source_file===f)).filter(Boolean);
+  if (!selected.length) {
+    el.innerHTML = '<div class="empty-pg" style="padding:80px">Select up to 4 reports in the Portfolio table to compare.</div>';
+    return;
+  }
+  const rows = [
+    {l:'Company', f:r=>r.issuer},
+    {l:'Country', f:r=>canonCountry(r.property_info?.country||'')},
+    {l:'Stage', f:r=>canonStage(r.property_info?.project_stage)},
+    {l:'Commodity', f:r=>(r.property_info?.commodities||[]).map(canonCommodity).join(', ')},
+    {l:'Deposit Type', f:r=>r.geology?.deposit_type},
+    {l:'M+I Tonnes', f:r=>{ const t=miTonnes(r); return t>0?fmtTp(t):null; }},
+    {l:'Post-Tax NPV', f:r=>r.economics?.post_tax_npv||r.economics?.pre_tax_npv},
+    {l:'IRR', f:r=>r.economics?.irr},
+    {l:'Initial CapEx', f:r=>r.economics?.initial_capex},
+    {l:'Mine Life', f:r=>r.economics?.mine_life_years!=null?r.economics.mine_life_years+' yr':null},
+    {l:'Qualified Persons', f:r=>String((r.qualified_persons||[]).length)},
+  ];
+  el.innerHTML = `<div class="compare-grid">${selected.map(r=>{
+    const title = r.property_info?.project_name||r.report_title||r.source_file;
+    return `<div class="compare-col">
+      <div class="compare-col-title">${esc(title)}</div>
+      ${rows.map(row=>`<div class="compare-row">
+        <span class="compare-lbl">${row.l}</span>
+        <span class="compare-val">${row.f(r)?esc(String(row.f(r))):'—'}</span>
+      </div>`).join('')}
+      <button class="btn" style="margin-top:12px;width:100%" onclick="selectFromPortfolio('${esc(r.source_file||'')}')">View report →</button>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function exportPortfolioCSV() {
+  const filtered = sortFilteredReports(filterReports());
+  const headers = ['source_file','report_title','issuer','country','stage','commodities','mi_tonnes','npv_raw','npv_millions','irr','mine_life_years','report_date','latitude','longitude'];
+  const escCsv = v => {
+    const s = v==null?'':String(v);
+    return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+  };
+  const lines = [headers.join(',')];
+  for (const r of filtered) {
+    const prop = r.property_info||{};
+    const npv = reportNpv(r);
+    lines.push([
+      r.source_file, r.report_title, r.issuer,
+      canonCountry(prop.country||''), canonStage(prop.project_stage),
+      (prop.commodities||[]).map(canonCommodity).join('; '),
+      miTonnes(r)||'', npv.raw, npv.value??'', r.economics?.irr||'',
+      r.economics?.mine_life_years??'', r.report_date||'',
+      prop.latitude??'', prop.longitude??'',
+    ].map(escCsv).join(','));
+  }
+  const blob = new Blob([lines.join('\n')], {type:'text/csv;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'orextractor_portfolio.csv';
+  a.click();
 }
 
 // ── Map ───────────────────────────────────────────────────────────────────
@@ -1125,8 +1623,8 @@ function renderMap() {
   const mapped = reports.filter(r=>{
     const prop = r.property_info||{};
     if(prop.latitude==null||prop.longitude==null) return false;
-    if(commF && !(prop.commodities||[]).map(c=>c.toLowerCase()).some(c=>c.includes(commF.toLowerCase()))) return false;
-    if(stgF && (prop.project_stage||'').toLowerCase()!==stgF.toLowerCase()) return false;
+    if(commF && !(prop.commodities||[]).map(c=>canonCommodity(c).toLowerCase()).some(c=>c.includes(commF.toLowerCase()))) return false;
+    if(stgF && canonStage(prop.project_stage||'').toLowerCase()!==stgF.toLowerCase()) return false;
     return true;
   });
 
@@ -1148,7 +1646,7 @@ function renderMap() {
     const lat = prop.latitude, lng = prop.longitude;
     const primary = (prop.commodities||[])[0]||'';
     const col = commodityColor(primary);
-    if(primary) seenComms.add(primary);
+    if(primary) seenComms.add(canonCommodity(primary));
     const mi = miTonnes(r);
     const radius = mi>0 ? Math.max(6, Math.min(30, 6+Math.sqrt(mi/1e6)*2.5)) : 8;
     const circle = L.circleMarker([lat,lng],{
@@ -1228,7 +1726,7 @@ function renderOverview(d) {
     </div>`).join('');
 
   // Resource chart
-  const allRows = [...(d.mineral_resources||[]),(d.mineral_reserves||[])];
+  const allRows = [...(d.mineral_resources||[]), ...(d.mineral_reserves||[])];
   $('resDateBadge').textContent = d.mineral_resources?.find(r=>r.effective_date)?.effective_date || d.report_date || '—';
   if (!allRows.length) {
     $('resChartBody').innerHTML = '<div class="empty-pg">No resource data</div>';
@@ -1515,7 +2013,7 @@ function renderExplPage(d) {
 // ── CHAT ──────────────────────────────────────────────────────────────────
 const CHAT_WELCOME_HTML = `
   <div class="chat-welcome-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
-  <div class="chat-welcome-title">Ask anything about your NI 43-101 reports</div>
+  <div class="chat-welcome-title">Ask ORExtractor anything about your reports</div>
   <div class="chat-welcome-sub">Answers drawn from your full knowledge base · source pages cited below each reply</div>
   <div class="chat-suggestions">
     <button class="chat-suggestion" onclick="fillChat('What are the total mineral resources across all reports?')">Total mineral resources?</button>

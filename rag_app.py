@@ -320,6 +320,11 @@ def _get_marker_converter():
     config_parser = ConfigParser({
         "output_format": "chunks",
         "disable_image_extraction": True,
+        # These NI 43-101 PDFs are digital (embedded text layer), so trust the
+        # provider text and skip Surya's recognition model — the slow step that
+        # otherwise re-OCRs every page. Scanned PDFs will yield no text and are
+        # handled by the empty-result skip in ingest().
+        "disable_ocr": True,
     })
     _marker_converter = PdfConverter(
         config=config_parser.generate_config_dict(),
@@ -363,12 +368,14 @@ def parse_pdf_to_documents(
     docs: List[Document] = []
     page_texts: dict[int, List[str]] = {}
     table_items: List[tuple] = []
+    image_items: List[tuple] = []
 
-    _SKIP_TYPES = {
-        "Picture", "PictureGroup", "Figure", "FigureGroup", "Equation",
-        "PageHeader", "PageFooter", "Handwriting",
-    }
+    _SKIP_TYPES = {"Equation", "PageHeader", "PageFooter", "Handwriting"}
     _TABLE_TYPES = {"Table", "TableGroup", "TableOfContents", "Form"}
+    # Figures/pictures are kept for their caption (and, if enabled, any LLM
+    # description) rather than discarded — the surrounding <img> tag is stripped
+    # by _html_to_text, leaving the textual context behind.
+    _IMAGE_TYPES = {"Picture", "PictureGroup", "Figure", "FigureGroup"}
 
     for block in blocks:
         page_no = (getattr(block, "page", 0) or 0) + 1  # marker is 0-indexed
@@ -380,6 +387,10 @@ def parse_pdf_to_documents(
             continue
         if block_type in _TABLE_TYPES:
             table_items.append((raw_html, page_no))
+        elif block_type in _IMAGE_TYPES:
+            text = _html_to_text(raw_html)
+            if text:
+                image_items.append((text, page_no))
         else:
             text = _html_to_text(raw_html)
             if text:
@@ -396,6 +407,12 @@ def parse_pdf_to_documents(
         docs.append(Document(
             page_content=table_content,
             metadata={"source": pdf_path.name, "page": page_no, "chunk": 1000 + t_idx, "type": "table"},
+        ))
+
+    for i_idx, (image_content, page_no) in enumerate(image_items):
+        docs.append(Document(
+            page_content=image_content,
+            metadata={"source": pdf_path.name, "page": page_no, "chunk": 2000 + i_idx, "type": "image"},
         ))
 
     return docs
