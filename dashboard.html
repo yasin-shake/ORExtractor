@@ -536,8 +536,6 @@ table.pf-table td,.pf-table th{padding:8px 10px}
 .home-list-item:hover{background:var(--nav-hover)}
 .home-list-item strong{color:var(--text)}
 .home-list-item span{color:var(--muted);font-size:11px}
-.scatter-wrap{width:100%;overflow:hidden}
-.scatter-wrap svg{display:block;width:100%;height:auto}
 .compare-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
 .compare-col{
   background:var(--surface);border:1px solid var(--border);border-radius:12px;
@@ -694,19 +692,6 @@ table.pf-table td,.pf-table th{padding:8px 10px}
           </div>
           <div class="card-body" id="homeTopNpv"></div>
         </div>
-      </div>
-      <div class="card g1" style="margin-bottom:18px">
-        <div class="card-header">
-          <div class="card-title"><span class="card-icon" id="homeGtIcon"></span>Grade vs Tonnage (M+I resources)</div>
-          <span class="card-badge">Click bubble to open report</span>
-        </div>
-        <div class="card-body scatter-wrap" id="homeGradeTonnage"></div>
-      </div>
-      <div class="card g1" style="margin-bottom:18px">
-        <div class="card-header">
-          <div class="card-title"><span class="card-icon" id="homeScatterIcon"></span>NPV vs Initial CapEx</div>
-        </div>
-        <div class="card-body scatter-wrap" id="homeNpvCapex"></div>
       </div>
       <div class="card g1">
         <div class="card-header">
@@ -1072,20 +1057,6 @@ function reportNpv(d) {
   const raw = d.economics?.post_tax_npv || d.economics?.pre_tax_npv || '';
   return parseMoney(raw);
 }
-function reportCapex(d) {
-  return parseMoney(d.economics?.initial_capex || '');
-}
-function weightedMiGrade(d) {
-  const rows = (d.mineral_resources||[]).filter(r=>/measured|indicated/i.test(r.category||''));
-  let tw=0, gw=0;
-  for (const r of rows) {
-    const g = primaryGrade(r);
-    const t = r.tonnes||0;
-    tw += t;
-    gw += (g.grade_value||0)*t;
-  }
-  return tw>0 ? gw/tw : null;
-}
 function barChartHtml(items, maxVal) {
   if (!items.length) return '<div class="empty-pg">No data</div>';
   const max = maxVal || Math.max(...items.map(i=>i.count), 1);
@@ -1096,42 +1067,6 @@ function barChartHtml(items, maxVal) {
       <div class="rc-track"><div class="rc-fill measured" style="width:${pct}%${it.color?`;background:${it.color}`:''}"></div></div>
     </div>`;
   }).join('')}</div>`;
-}
-function svgScatter(points, opts) {
-  const W=opts.width||560, H=opts.height||280;
-  const pad={l:52,r:16,t:16,b:36};
-  const plotW=W-pad.l-pad.r, plotH=H-pad.t-pad.b;
-  if (!points.length) return '<div class="empty-pg">No data points</div>';
-  const xs=points.map(p=>p.x).filter(v=>v>0), ys=points.map(p=>p.y).filter(v=>v!=null&&v>0);
-  if (!xs.length||!ys.length) return '<div class="empty-pg">Insufficient numeric data</div>';
-  const xMin=opts.logX?Math.min(...xs):0, xMax=Math.max(...xs);
-  const yMin=0, yMax=Math.max(...ys)*1.05;
-  const xScale=v=>{
-    if (opts.logX) {
-      const lo=Math.log10(Math.max(xMin,1)), hi=Math.log10(Math.max(xMax,1));
-      return pad.l+((Math.log10(Math.max(v,1))-lo)/(hi-lo||1))*plotW;
-    }
-    return pad.l+((v-xMin)/(xMax-xMin||1))*plotW;
-  };
-  const yScale=v=>pad.t+plotH-((v-yMin)/(yMax-yMin||1))*plotH;
-  const bubbles=points.map((p,i)=>{
-    const cx=xScale(p.x), cy=yScale(p.y);
-    const r=Math.max(5, Math.min(18, 5+Math.sqrt((p.size||p.x)/1e6)));
-    const col=p.color||'#10B981';
-    const tip=esc(p.label||'');
-    return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${r}" fill="${col}" fill-opacity="0.65" stroke="${col}" stroke-width="1.5" style="cursor:pointer" onclick="scatterClick(${JSON.stringify(p.id||'')})"><title>${tip}</title></circle>`;
-  }).join('');
-  const xLabel=esc(opts.xLabel||'X'), yLabel=esc(opts.yLabel||'Y');
-  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img">
-    <text x="${pad.l}" y="${H-8}" font-size="10" fill="var(--muted)">${xLabel}</text>
-    <text x="8" y="${pad.t+plotH/2}" font-size="10" fill="var(--muted)" transform="rotate(-90 12 ${pad.t+plotH/2})">${yLabel}</text>
-    <line x1="${pad.l}" y1="${pad.t+plotH}" x2="${W-pad.r}" y2="${pad.t+plotH}" stroke="var(--border)"/>
-    <line x1="${pad.l}" y1="${pad.t}" x2="${pad.l}" y2="${pad.t+plotH}" stroke="var(--border)"/>
-    ${bubbles}
-  </svg>`;
-}
-function scatterClick(filename) {
-  if (filename) selectFromPortfolio(filename);
 }
 
 // ── API ───────────────────────────────────────────────────────────────────
@@ -1474,8 +1409,6 @@ function renderHome() {
   if ($('homeStageIcon')) $('homeStageIcon').innerHTML = SVG.barChart;
   if ($('homeCountryIcon')) $('homeCountryIcon').innerHTML = SVG.mapPin;
   if ($('homeNpvIcon')) $('homeNpvIcon').innerHTML = SVG.trendUp;
-  if ($('homeGtIcon')) $('homeGtIcon').innerHTML = SVG.layers;
-  if ($('homeScatterIcon')) $('homeScatterIcon').innerHTML = SVG.barChart;
   if ($('homeRecentIcon')) $('homeRecentIcon').innerHTML = SVG.fileText;
 
   const commCounts = {};
@@ -1508,19 +1441,6 @@ function renderHome() {
     </div>`;
   }).join('')}</div>` : '<div class="empty-pg">No NPV data extracted</div>';
 
-  renderGradeTonnage($('homeGradeTonnage'));
-
-  const npvCapexPts = reports.map(r=>{
-    const npv=reportNpv(r), cap=reportCapex(r);
-    if (npv.value==null||cap.value==null) return null;
-    const prop=r.property_info||{};
-    const primary=(prop.commodities||[])[0]||'';
-    return {x:cap.value, y:npv.value, size:cap.value, color:commodityColor(canonCommodity(primary)),
-      label:(prop.project_name||r.report_title||r.source_file)+' — NPV '+npv.raw,
-      id:r.source_file};
-  }).filter(Boolean);
-  $('homeNpvCapex').innerHTML = svgScatter(npvCapexPts, {logX:false, xLabel:'Initial CapEx (M)', yLabel:'NPV (M)'});
-
   const recent = [...reports].sort((a,b)=>{
     const da=a.report_date||'', db=b.report_date||'';
     return db.localeCompare(da);
@@ -1533,21 +1453,6 @@ function renderHome() {
       <span>${esc(canonStage(r.property_info?.project_stage)||'')}</span>
     </div>`;
   }).join('');
-}
-
-function renderGradeTonnage(container) {
-  if (!container) return;
-  const pts = reports.map(r=>{
-    const mi = miTonnes(r);
-    const grade = weightedMiGrade(r);
-    if (mi<=0 || grade==null) return null;
-    const prop = r.property_info||{};
-    const primary = (prop.commodities||[])[0]||'';
-    return {x:mi, y:grade, size:mi, color:commodityColor(canonCommodity(primary)),
-      label:(prop.project_name||r.report_title||r.source_file)+' — '+fmtTp(mi),
-      id:r.source_file};
-  }).filter(Boolean);
-  container.innerHTML = svgScatter(pts, {logX:true, xLabel:'M+I Tonnes', yLabel:'Weighted Grade'});
 }
 
 function renderCompare() {
