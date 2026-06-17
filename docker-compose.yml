@@ -1,5 +1,6 @@
-# Read-only EC2 deployment: pre-built extracted_data/ and .chroma_db/ are bind-mounted
-# from the host (transferred outside git). Ingest/extract cannot write inside the container.
+# Read-only EC2 deployment: pre-built data bind-mounted from the host (transferred outside git).
+# extracted_data/ and knowledge/ are read-only — ingest/extract cannot persist changes.
+# .chroma_db/ must be writable: Chroma opens SQLite with write access even for queries (locks/metadata).
 services:
   ni43101-api:
     build: .
@@ -8,7 +9,8 @@ services:
     env_file:
       - .env
     volumes:
+      - ./.env:/app/.env:ro
       - ./knowledge:/app/knowledge:ro
       - ./extracted_data:/app/extracted_data:ro
-      - ./.chroma_db:/app/.chroma_db:ro
+      - ./.chroma_db:/app/.chroma_db
     restart: unless-stopped
