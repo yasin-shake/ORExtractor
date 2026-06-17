@@ -1,3 +1,5 @@
+# Read-only EC2 deployment: pre-built extracted_data/ and .chroma_db/ are bind-mounted
+# from the host (transferred outside git). Ingest/extract cannot write inside the container.
 services:
   ni43101-api:
     build: .
@@ -6,10 +8,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./knowledge:/app/knowledge
-      - ./extracted_data:/app/extracted_data
-      - chroma_data:/app/.chroma_db
+      - ./knowledge:/app/knowledge:ro
+      - ./extracted_data:/app/extracted_data:ro
+      - ./.chroma_db:/app/.chroma_db:ro
     restart: unless-stopped
-
-volumes:
-  chroma_data:

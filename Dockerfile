@@ -2,16 +2,16 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System dependencies for OCR (tesseract) and PDF rendering (poppler)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        tesseract-ocr \
-        poppler-utils \
-    && rm -rf /var/lib/apt/lists/*
+# Read-only server: dashboard + chat over pre-built data. PDF ingest/OCR runs off-server,
+# so tesseract/poppler are not installed here.
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+
+# Default mount points (overridden at runtime by docker-compose bind mounts).
+RUN mkdir -p knowledge extracted_data .chroma_db
 
 EXPOSE 8000
 

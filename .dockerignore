@@ -4,10 +4,22 @@ venv
 env
 __pycache__
 *.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+dist
+build
+
+# Secrets — provide via env_file at runtime, never bake into the image
+.env
+*.pem
+
+# Pre-built runtime data — bind-mounted read-only from the host (not in git)
 .chroma_db
 extracted_data
-knowledge/*.pdf
-.env
+knowledge
+
 .claude
 .DS_Store
 Thumbs.db
