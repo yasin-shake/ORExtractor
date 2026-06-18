@@ -7,6 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
 /* ── Theme tokens ─────────────────────────────────────────────────── */
 :root[data-theme="light"] {
@@ -458,6 +459,35 @@ table.dt td.r,.rc-val{
 .chat-suggestions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:18px}
 .chat-suggestion{background:var(--surface);border:1px solid var(--border);color:var(--text2);padding:8px 14px;border-radius:20px;font-size:13px;cursor:pointer;transition:all .15s;font-family:inherit}
 .chat-suggestion:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-dim)}
+.chat-meta{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:flex-start}
+.chat-item-badge{font-size:11px;background:var(--surface2);border:1px solid var(--border);color:var(--text2);padding:2px 8px;border-radius:4px;font-family:monospace}
+.chat-assessment{font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px;display:inline-block;margin-top:6px}
+.chat-assessment.go{background:#dcfce7;color:#166534;border:1px solid #86efac}
+.chat-assessment.conditional{background:#fef9c3;color:#854d0e;border:1px solid #fde047}
+.chat-assessment.further{background:#ffedd5;color:#9a3412;border:1px solid #fdba74}
+.chat-assessment.nogo{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5}
+.chat-flags{margin-top:6px;font-size:12px;color:var(--text2)}
+.chat-flags ul{margin:4px 0 0 16px;padding:0}
+.chat-peer{margin-top:6px;font-size:12px;color:var(--muted);font-style:italic;max-width:100%}
+.chat-status{font-size:12px;color:var(--muted);font-style:italic;padding:2px 0 6px}
+.chat-md{line-height:1.65;font-size:13.5px}
+.chat-md h1,.chat-md h2,.chat-md h3,.chat-md h4{margin:1em 0 .45em;font-weight:600;line-height:1.3;color:var(--text)}
+.chat-md h2{font-size:1.05rem;border-bottom:1px solid var(--border);padding-bottom:.25em}
+.chat-md h3{font-size:.95rem}
+.chat-md p{margin:.45em 0}
+.chat-md hr{border:none;border-top:1px solid var(--border);margin:1em 0}
+.chat-md ul,.chat-md ol{margin:.45em 0 .45em 1.25em;padding:0}
+.chat-md li{margin:.2em 0}
+.chat-md strong{font-weight:600;color:var(--text)}
+.chat-md em{font-style:italic}
+.chat-md code{font-family:var(--mono,'IBM Plex Mono',monospace);font-size:12px;background:var(--surface2);padding:1px 5px;border-radius:3px}
+.chat-md pre{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;overflow-x:auto;margin:.6em 0}
+.chat-md pre code{background:none;padding:0;font-size:12px}
+.chat-md table{width:100%;border-collapse:collapse;margin:.75em 0;font-size:12.5px}
+.chat-md th,.chat-md td{border:1px solid var(--border);padding:6px 10px;text-align:left}
+.chat-md th{background:var(--surface2);font-weight:600}
+.chat-md blockquote{border-left:3px solid var(--accent);margin:.6em 0;padding:.2em 0 .2em .85em;color:var(--text2)}
+.chat-md a{color:var(--accent);text-decoration:underline}
 
 /* ── Map page ────────────────────────────────────────────────────── */
 #page-map.active{display:flex;flex-direction:column;gap:14px}
@@ -815,13 +845,14 @@ table.pf-table td,.pf-table th{padding:8px 10px}
         <div class="chat-messages" id="chatMessages">
           <div class="chat-welcome" id="chatWelcome">
             <div class="chat-welcome-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
-            <div class="chat-welcome-title">Ask ORExtractor anything about your reports</div>
-            <div class="chat-welcome-sub">Answers drawn from your full knowledge base · source pages cited below each reply</div>
-            <div class="chat-suggestions">
-              <button class="chat-suggestion" onclick="fillChat('What are the total mineral resources across all reports?')">Total mineral resources?</button>
-              <button class="chat-suggestion" onclick="fillChat('Summarise the project economics and NPV')">Project economics & NPV</button>
-              <button class="chat-suggestion" onclick="fillChat('What is the deposit type and host rock?')">Deposit type & host rock</button>
-              <button class="chat-suggestion" onclick="fillChat('Who are the qualified persons and what are their credentials?')">Qualified persons</button>
+            <div class="chat-welcome-title">NI 43-101 Due Diligence Chat</div>
+            <div class="chat-welcome-sub">Chapter-directed retrieval · peer benchmarking · NI Item citations</div>
+            <div class="chat-suggestions" id="chatSuggestions">
+              <button class="chat-suggestion" onclick="fillChat('Is the resource classification defensible given drill spacing?')">Classification vs drill spacing</button>
+              <button class="chat-suggestion" onclick="fillChat('Are QAQC results acceptable and complete?')">QAQC adequacy</button>
+              <button class="chat-suggestion" onclick="fillChat('Is the cut-off grade reasonable compared with peer reports?')">Cut-off vs peers</button>
+              <button class="chat-suggestion" onclick="fillChat('What are the key technical red flags?')">Technical red flags</button>
+              <button class="chat-suggestion" onclick="fillChat('Should this project be Go, Conditional Go, Further Work, or No-Go?')">Go / No-Go assessment</button>
             </div>
           </div>
         </div>
@@ -856,6 +887,8 @@ table.pf-table td,.pf-table th{padding:8px 10px}
 const API = location.protocol === 'file:' ? 'http://localhost:8000' : location.origin;
 let reports = [], current = null, dark = false;
 let compareSet = new Set();
+let chatHistory = [];
+const MAX_CHAT_HISTORY = 20;
 const MAX_COMPARE = 4;
 let pfSort = { key: 'mi', dir: -1 };
 
@@ -913,6 +946,10 @@ function navTo(page, el) {
   if (page === 'portfolio') renderPortfolio();
   if (page === 'map')       renderMap();
   if (page === 'compare')   renderCompare();
+  if (page === 'chat') {
+    const cf = $('chatFilter');
+    if (cf && current && current.source_file) cf.value = current.source_file;
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -1918,14 +1955,50 @@ function renderExplPage(d) {
 // ── CHAT ──────────────────────────────────────────────────────────────────
 const CHAT_WELCOME_HTML = `
   <div class="chat-welcome-icon"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
-  <div class="chat-welcome-title">Ask ORExtractor anything about your reports</div>
-  <div class="chat-welcome-sub">Answers drawn from your full knowledge base · source pages cited below each reply</div>
+  <div class="chat-welcome-title">NI 43-101 Due Diligence Chat</div>
+  <div class="chat-welcome-sub">Chapter-directed retrieval · peer benchmarking · NI Item citations</div>
   <div class="chat-suggestions">
-    <button class="chat-suggestion" onclick="fillChat('What are the total mineral resources across all reports?')">Total mineral resources?</button>
-    <button class="chat-suggestion" onclick="fillChat('Summarise the project economics and NPV')">Project economics & NPV</button>
-    <button class="chat-suggestion" onclick="fillChat('What is the deposit type and host rock?')">Deposit type & host rock</button>
-    <button class="chat-suggestion" onclick="fillChat('Who are the qualified persons and what are their credentials?')">Qualified persons</button>
+    <button class="chat-suggestion" onclick="fillChat('Is the resource classification defensible given drill spacing?')">Classification vs drill spacing</button>
+    <button class="chat-suggestion" onclick="fillChat('Are QAQC results acceptable and complete?')">QAQC adequacy</button>
+    <button class="chat-suggestion" onclick="fillChat('Is the cut-off grade reasonable compared with peer reports?')">Cut-off vs peers</button>
+    <button class="chat-suggestion" onclick="fillChat('What are the key technical red flags?')">Technical red flags</button>
+    <button class="chat-suggestion" onclick="fillChat('Should this project be Go, Conditional Go, Further Work, or No-Go?')">Go / No-Go assessment</button>
   </div>`;
+
+function assessmentClass(a) {
+  if (!a) return '';
+  const t = a.toLowerCase();
+  if (t.includes('no-go') || t.includes('no go')) return 'nogo';
+  if (t.includes('conditional')) return 'conditional';
+  if (t.includes('further')) return 'further';
+  return 'go';
+}
+
+function buildChatMetaHtml(meta) {
+  if (!meta) return '';
+  let html = '';
+  const items = [...(meta.routed_items || []), ...(meta.cross_check_items || [])];
+  const uniqueItems = [...new Set(items)].sort((a,b)=>a-b);
+  if (uniqueItems.length) {
+    html += '<div class="chat-meta">' + uniqueItems.map(i =>
+      `<span class="chat-item-badge">Item ${i}</span>`).join('') + '</div>';
+  }
+  if (meta.assessment) {
+    html += `<div class="chat-assessment ${assessmentClass(meta.assessment)}">${esc(meta.assessment)}</div>`;
+  }
+  if (meta.flags && meta.flags.length) {
+    html += '<div class="chat-flags"><strong>Flags:</strong><ul>' +
+      meta.flags.map(f => `<li>${esc(f)}</li>`).join('') + '</ul></div>';
+  }
+  if (meta.tool_calls && meta.tool_calls.length) {
+    html += `<div class="chat-peer">Tools: ${esc(meta.tool_calls.join(' -> '))}</div>`;
+  }
+  if (meta.peer_summary) {
+    const short = meta.peer_summary.length > 280 ? meta.peer_summary.slice(0, 277) + '…' : meta.peer_summary;
+    html += `<div class="chat-peer">${esc(short)}</div>`;
+  }
+  return html;
+}
 
 function fillChat(text) {
   const inp = $('chatInput');
@@ -1944,6 +2017,7 @@ function autoGrow(el) {
 }
 
 function clearChat() {
+  chatHistory = [];
   const msgs = $('chatMessages');
   msgs.innerHTML = '';
   const w = document.createElement('div');
@@ -1954,15 +2028,89 @@ function clearChat() {
 }
 
 function markdownLite(raw) {
-  return raw
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/\*\*(.+?)\*\*/gs,'<strong>$1</strong>')
-    .replace(/\*([^*]+?)\*/gs,'<em>$1</em>')
-    .replace(/`([^`]+)`/g,'<code style="font-family:monospace;background:var(--surface2);padding:1px 5px;border-radius:3px;font-size:12px">$1</code>')
-    .replace(/\n/g,'<br>');
+  return renderMarkdown(raw);
 }
 
-function appendChatMsg(role, text, sources) {
+function renderMarkdown(raw) {
+  if (!raw) return '';
+  if (typeof marked !== 'undefined') {
+    try {
+      marked.setOptions({ gfm: true, breaks: false, headerIds: false, mangle: false });
+      return marked.parse(raw);
+    } catch (e) {
+      console.warn('marked parse failed', e);
+    }
+  }
+  return esc(raw).replace(/\n/g, '<br>');
+}
+
+let _streamRenderPending = null;
+
+function scheduleMarkdownRender(bubbleEl, text) {
+  if (_streamRenderPending) cancelAnimationFrame(_streamRenderPending);
+  _streamRenderPending = requestAnimationFrame(() => {
+    bubbleEl.innerHTML = renderMarkdown(text);
+    _streamRenderPending = null;
+  });
+}
+
+function createStreamingAssistantMsg() {
+  const welcome = $('chatWelcome');
+  if (welcome) welcome.remove();
+  const container = $('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg assistant';
+  div.id = 'chatStreaming';
+  const botAvatar = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`;
+  div.innerHTML = `
+    <div class="chat-avatar">${botAvatar}</div>
+    <div class="chat-stream-body">
+      <div class="chat-status" id="chatStreamStatus">Thinking…</div>
+      <div class="chat-bubble chat-stream-bubble"><div class="chat-md chat-stream-md"></div></div>
+      <div class="chat-stream-meta"></div>
+      <div class="chat-stream-sources"></div>
+    </div>`;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  return {
+    div,
+    statusEl: div.querySelector('#chatStreamStatus'),
+    bubbleEl: div.querySelector('.chat-stream-md'),
+    metaEl: div.querySelector('.chat-stream-meta'),
+    sourcesEl: div.querySelector('.chat-stream-sources'),
+    text: '',
+  };
+}
+
+function finalizeStreamingMsg(state, meta, sources, answer) {
+  if (state.statusEl) state.statusEl.remove();
+  state.div.removeAttribute('id');
+  const text = answer || state.text;
+  state.bubbleEl.innerHTML = renderMarkdown(text);
+  state.bubbleEl.parentElement.classList.add('chat-bubble');
+  if (meta) {
+    const metaHtml = buildChatMetaHtml(meta);
+    if (metaHtml) state.metaEl.innerHTML = metaHtml;
+  }
+  if (sources && sources.length) {
+    const seen = new Set();
+    const tags = sources
+      .filter(s => s.file && s.page != null)
+      .map(s => {
+        const key = s.file + ':' + s.page;
+        if (seen.has(key)) return '';
+        seen.add(key);
+        const short = s.file.length > 32 ? '…' + s.file.slice(-29) : s.file;
+        const item = s.ni_item ? ` · Item ${s.ni_item}` : '';
+        return `<span class="chat-source-tag" title="${esc(s.file)}">${esc(short)} · p.${s.page}${item}</span>`;
+      })
+      .filter(Boolean).join('');
+    if (tags) state.sourcesEl.innerHTML = `<div class="chat-sources">${tags}</div>`;
+  }
+  $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+}
+
+function appendChatMsg(role, text, sources, meta) {
   const welcome = $('chatWelcome');
   if (welcome) welcome.remove();
   const container = $('chatMessages');
@@ -1979,17 +2127,20 @@ function appendChatMsg(role, text, sources) {
         if (seen.has(key)) return '';
         seen.add(key);
         const short = s.file.length > 32 ? '…' + s.file.slice(-29) : s.file;
-        return `<span class="chat-source-tag" title="${esc(s.file)}">${esc(short)} · p.${s.page}</span>`;
+        const item = s.ni_item ? ` · Item ${s.ni_item}` : '';
+        return `<span class="chat-source-tag" title="${esc(s.file)}">${esc(short)} · p.${s.page}${item}</span>`;
       })
       .filter(Boolean).join('');
     if (tags) sourcesHtml = `<div class="chat-sources">${tags}</div>`;
   }
+  const metaHtml = !isUser ? buildChatMetaHtml(meta) : '';
   const userAvatar = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
   const botAvatar  = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`;
   div.innerHTML = `
     <div class="chat-avatar">${isUser ? userAvatar : botAvatar}</div>
     <div>
-      <div class="chat-bubble">${isUser ? esc(text) : markdownLite(text)}</div>
+      <div class="chat-bubble">${isUser ? esc(text) : '<div class="chat-md">' + renderMarkdown(text) + '</div>'}</div>
+      ${metaHtml}
       ${sourcesHtml}
     </div>`;
   container.appendChild(div);
@@ -2018,23 +2169,84 @@ async function sendChat() {
   input.value = '';
   autoGrow(input);
   $('chatSendBtn').disabled = true;
-  appendChatMsg('user', question, null);
-  appendTyping();
+  appendChatMsg('user', question, null, null);
+  chatHistory.push({ role: 'user', content: question });
+  if (chatHistory.length > MAX_CHAT_HISTORY) chatHistory = chatHistory.slice(-MAX_CHAT_HISTORY);
+
+  const streamState = createStreamingAssistantMsg();
+  let meta = {};
+  let sources = [];
+  let finalAnswer = '';
+
   try {
-    const res = await fetch(`${API}/api/chat`, {
+    const res = await fetch(`${API}/api/chat/stream`, {
       method: 'POST',
       headers: { ...apiHdr(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, pdf_filter: pdfFilter })
+      body: JSON.stringify({
+        question,
+        pdf_filter: pdfFilter,
+        history: chatHistory.slice(0, -1),
+      })
     });
-    const typing = $('chatTyping');
-    if (typing) typing.remove();
-    if (!res.ok) { appendChatMsg('assistant', `Error: HTTP ${res.status} — check API key or server logs.`, null); return; }
-    const data = await res.json();
-    appendChatMsg('assistant', data.answer, data.sources);
+
+    if (!res.ok) {
+      finalizeStreamingMsg(streamState, null, null, `Error: HTTP ${res.status} — check API key or server logs.`);
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || '';
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data:')) continue;
+        let evt;
+        try {
+          evt = JSON.parse(line.slice(5).trim());
+        } catch (_) { continue; }
+
+        if (evt.type === 'status' && streamState.statusEl) {
+          streamState.statusEl.textContent = evt.message || 'Working…';
+        } else if (evt.type === 'meta') {
+          meta = {
+            routed_items: evt.routed_items,
+            cross_check_items: evt.cross_check_items,
+            flags: evt.flags,
+            peer_summary: evt.peer_summary,
+            assessment: evt.assessment,
+            tool_calls: evt.tool_calls,
+          };
+          if (evt.sources) sources = evt.sources;
+        } else if (evt.type === 'token' && evt.content) {
+          if (streamState.statusEl) streamState.statusEl.textContent = '';
+          streamState.text += evt.content;
+          scheduleMarkdownRender(streamState.bubbleEl, streamState.text);
+          $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
+        } else if (evt.type === 'done') {
+          finalAnswer = evt.answer || streamState.text;
+          if (evt.flags) meta.flags = evt.flags;
+          if (evt.assessment) meta.assessment = evt.assessment;
+          if (evt.peer_summary) meta.peer_summary = evt.peer_summary;
+        } else if (evt.type === 'error') {
+          finalAnswer = `Error: ${evt.message || 'Unknown error'}`;
+        }
+      }
+    }
+
+    if (!finalAnswer) finalAnswer = streamState.text || 'No response received.';
+    finalizeStreamingMsg(streamState, meta, sources, finalAnswer);
+    chatHistory.push({ role: 'assistant', content: finalAnswer });
+    if (chatHistory.length > MAX_CHAT_HISTORY) chatHistory = chatHistory.slice(-MAX_CHAT_HISTORY);
   } catch (e) {
-    const typing = $('chatTyping');
-    if (typing) typing.remove();
-    appendChatMsg('assistant', `Error: ${e.message}`, null);
+    finalizeStreamingMsg(streamState, null, null, `Error: ${e.message}`);
   } finally {
     $('chatSendBtn').disabled = false;
     input.focus();

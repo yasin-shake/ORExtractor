@@ -58,8 +58,38 @@ def _invoke_with_backoff(structured_llm, messages, max_retries: int = 6):
             else:
                 raise
 
-# Topic-specific retrieval queries. Each entry pulls the chunks most likely to
-# contain the fields for one part of the schema.
+# NI 43-101 Item-aligned retrieval queries (BMRC chapter routing guide).
+_ITEM_QUERIES: dict[int, List[str]] = {
+    1: ["executive summary project overview key risks recommendations viability"],
+    2: ["introduction qualified person QP effective date site visit issuer"],
+    3: ["reliance on other experts legal tenure tax environment permitting"],
+    4: ["property description location tenure ownership royalty NSR encumbrance licence"],
+    5: ["accessibility climate infrastructure power water road port logistics"],
+    6: ["history historical exploration production prior estimates"],
+    7: ["geological setting mineralization host rock alteration structural controls"],
+    8: ["deposit type genetic model analogue deposit classification"],
+    9: ["exploration mapping geochemistry geophysics trenching sampling"],
+    10: ["drilling drill holes spacing orientation recovery downhole survey intercept"],
+    11: ["sample preparation analyses security QAQC CRM blank duplicate laboratory"],
+    12: ["data verification QP validation database integrity site visit independent"],
+    13: ["metallurgical testing testwork recovery ore type deleterious elements"],
+    14: ["mineral resource estimate cut-off classification variography density block model"],
+    15: ["mineral reserve estimate proven probable modifying factors cut-off conversion"],
+    16: ["mining methods open pit underground dilution recovery strip ratio schedule"],
+    17: ["recovery methods processing plant flowsheet throughput reagents concentrate"],
+    18: ["project infrastructure tailings waste dump power water port logistics"],
+    19: ["market studies contracts payability concentrate pricing offtake TC RC"],
+    20: ["environmental permitting social impact community ESG closure resettlement"],
+    21: ["capital operating costs CAPEX OPEX contingency sustaining closure accuracy"],
+    22: ["economic analysis NPV IRR payback sensitivity discount rate metal price"],
+    23: ["adjacent properties nearby deposits mines analogues"],
+    24: ["other relevant data information project specific technical"],
+    25: ["interpretation conclusions QP risks confidence materiality"],
+    26: ["recommendations work program budget next stage study requirements"],
+    27: ["references citations source reports bibliography"],
+}
+
+# Legacy topic groups retained for backward-compatible extraction passes.
 _TOPIC_QUERIES: dict[str, List[str]] = {
     "executive_summary": [
         "executive summary highlights key results overview project description findings",
@@ -145,7 +175,9 @@ _EXTRACTION_INSTRUCTION = (
     "13. environmental.indigenous_consultation — capture any FPIC, duty-to-consult, IBA "
     "or community-opposition notes.\n"
     "14. environmental.political_risk_flags — list explicit risk statements about resource "
-    "nationalism, political instability, mining-code changes, or social licence issues."
+    "nationalism, political instability, mining-code changes, or social licence issues.\n"
+    "15. Metadata tags — populate study_stage, deposit_type, mining_method, processing_route, "
+    "ore_type, cutoff_type, economic_year, effective_date, primary_commodity from context."
 )
 
 
@@ -208,6 +240,18 @@ _EXTRACTION_PASSES: List[dict] = [
             "Leave all other top-level fields null or empty."
         ),
     },
+    {
+        "name": "metadata",
+        "topics": [],
+        "items": [1, 2, 4, 7, 8, 14, 15, 16, 17, 21, 22],
+        "focus": (
+            "Extract ONLY portfolio metadata tags: study_stage, deposit_type, mining_method, "
+            "processing_route, ore_type, cutoff_type, economic_year, effective_date, "
+            "primary_commodity. Infer from report purpose, property stage, geology deposit "
+            "type, mining/processing sections, resource cut-off type, and economics. "
+            "Leave all other fields null or empty."
+        ),
+    },
 ]
 
 
@@ -220,12 +264,34 @@ def _gather_context_for_topics(
     vectorstore: Chroma,
     filename: str,
     topics: List[str],
+    items: Optional[List[int]] = None,
     per_query_k: Optional[int] = None,
 ) -> str:
-    """Retrieve and de-duplicate topic-relevant chunks for a given list of topics."""
+    """Retrieve and de-duplicate topic- or Item-relevant chunks."""
     per_query_k = per_query_k or settings.extract_top_k
     seen_chunks: set = set()
     blocks: List[str] = []
+
+    if items:
+        for item_num in items:
+            queries = _ITEM_QUERIES.get(item_num, [])
+            item_parts: List[str] = []
+            for q in queries:
+                parts, metadatas = query_chunks(
+                    vectorstore, q, per_query_k, filter_sources=[filename]
+                )
+                for part, meta in zip(parts, metadatas):
+                    if meta.get("ni_item") and int(meta.get("ni_item") or 0) not in (0, item_num):
+                        continue
+                    key = (meta.get("source"), meta.get("page"), meta.get("chunk"))
+                    if key in seen_chunks:
+                        continue
+                    seen_chunks.add(key)
+                    item_parts.append(part)
+            if item_parts:
+                blocks.append(f"### Context for: Item {item_num}\n" + "\n\n".join(item_parts))
+        return "\n\n".join(blocks)
+
     for topic in topics:
         queries = _TOPIC_QUERIES.get(topic, [])
         topic_parts: List[str] = []
@@ -291,7 +357,11 @@ def extract_report(
 
     for pass_def in _EXTRACTION_PASSES:
         context = _gather_context_for_topics(
-            settings, vectorstore, filename, pass_def["topics"]
+            settings,
+            vectorstore,
+            filename,
+            pass_def.get("topics", []),
+            items=pass_def.get("items"),
         )
         if not context.strip():
             continue

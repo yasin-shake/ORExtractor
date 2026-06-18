@@ -63,6 +63,12 @@ To wipe and rebuild the index (e.g. after changing chunk settings):
 python rag_app.py ingest --rebuild
 ```
 
+After upgrading to chapter-aware ingestion, tag existing chunks with NI Item metadata without re-embedding:
+
+```bash
+python rag_app.py reindex-chapters
+```
+
 ### 3 — Extract structured data
 
 ```bash
@@ -70,7 +76,7 @@ python rag_app.py extract                    # all ingested reports
 python rag_app.py extract --file report.pdf  # a single report
 ```
 
-Each report is processed through 11 topic-specific retrieval passes (property, geology, exploration, resources, reserves, mining, processing, economics, environmental, executive summary, front matter) and the gathered context is passed to Claude using `with_structured_output` bound to the `NI43101Report` Pydantic schema. Results are written to `extracted_data/{stem}.json`.
+Each report is processed through focused extraction passes (identity, resources/reserves, economics/technical, geology/environment, plus portfolio metadata tags). Retrieval uses NI 43-101 Item-aligned queries where available. Results are written to `extracted_data/{stem}.json`.
 
 If Bedrock rate limits are hit, the extractor backs off automatically (60 s → 120 s → …) and pauses 30 s between reports.
 
@@ -93,7 +99,7 @@ Open `http://localhost:8000/dashboard`.
 | **Property & Geology** | Location, coordinates, jurisdiction, exchange, tenure, infrastructure, deposit type, host rock, mineralisation, structural controls, historical production |
 | **Exploration & QPs** | Drilling statistics, notable intercepts, geophysical surveys, sampling methods, Qualified Person panel |
 | **Map** | Leaflet world map — markers sized by M+I tonnage, coloured by primary commodity; filter by commodity and stage; popup with project summary and "View full report" link |
-| **Chat** | RAG chat across all indexed reports with source-page citations; optional single-report filter |
+| **Chat** | Agentic NI 43-101 due diligence chat with chapter-directed retrieval (Items 1–27), peer benchmarking, red-flag detection, and Go/No-Go assessment; client-side conversation memory; optional single-report filter |
 
 Additional topbar controls:
 - **⚙ Extract All** — triggers extraction for every ingested PDF from the UI (no CLI needed)
@@ -120,7 +126,8 @@ Interactive docs: `http://localhost:8000/docs`
 | `POST`   | `/api/ingest` | Upload PDFs (multipart) and ingest |
 | `POST`   | `/api/ingest/rebuild` | Wipe and rebuild the vector index |
 | `DELETE` | `/api/documents/{filename}` | Remove a PDF and rebuild |
-| `POST`   | `/api/chat` | Ask a question; body `{question, pdf_filter?}`; returns `{answer, sources}` |
+| `POST`   | `/api/chat` | Agentic Q&A; body `{question, pdf_filter?, history?}`; returns `{answer, sources, routed_items, flags, peer_summary, assessment}` |
+| `POST`   | `/api/reindex-chapters` | Rebuild NI Item tags on chunks without re-embedding |
 | `GET`    | `/api/reports` | List all structured extractions |
 | `GET`    | `/api/reports/{filename}` | Get a single structured extraction |
 | `POST`   | `/api/extract` | Run extraction on one ingested report; body `{filename}` |
@@ -135,6 +142,24 @@ python rag_app.py chat
 ```
 
 Type `exit` or `quit` to stop.
+
+### 4e — Agent chat (LangGraph test harness)
+
+With `AGENT_CHAT=1` and `AGENT_MODE=langgraph` in `.env`:
+
+```bash
+# Single question (all reports)
+python agent_chat.py "Are QAQC results acceptable and complete?"
+
+# Scoped to one report
+python agent_chat.py "Is the cut-off grade reasonable compared with peers?" --file my_report.pdf
+```
+
+The agent calls six tools in a ReAct loop (max 5 rounds): `route_question`, `get_routing_playbook`, `search_by_items`, `get_extraction`, `find_peer_reports`, `benchmark_field`.
+
+Set `AGENT_MODE=pipeline` to use the deterministic fallback (no tool-calling).
+
+Via API / dashboard: `POST /api/chat` with `{ "question": "...", "pdf_filter": ["report.pdf"], "history": [] }`. The response includes `routed_items`, `tool_calls`, `flags`, `peer_summary`, and `assessment`.
 
 ## Extracted schema
 

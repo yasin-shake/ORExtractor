@@ -9,6 +9,9 @@ langchain-chroma
 langchain-aws
 boto3
 
+# ── Agent (optional LangGraph extension point) ────────────────────────────────
+langgraph
+
 # ── API server ────────────────────────────────────────────────────────────────
 fastapi
 uvicorn[standard]

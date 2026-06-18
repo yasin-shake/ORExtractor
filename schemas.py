@@ -531,3 +531,41 @@ class NI43101Report(BaseModel):
         None,
         description="A concise narrative summary of the project and its key findings.",
     )
+
+    # Portfolio metadata tags (BMRC routing guide) for peer filtering and benchmarking
+    study_stage: Optional[str] = Field(
+        None,
+        description="Study stage: Exploration, MRE, PEA, PFS, FS, or operating.",
+    )
+    deposit_type: Optional[str] = Field(
+        None,
+        description="Deposit type (e.g. porphyry, VMS, skarn, IOCG, sediment-hosted).",
+    )
+    mining_method: Optional[str] = Field(
+        None,
+        description="Primary mining method: open pit, underground, or combined.",
+    )
+    processing_route: Optional[str] = Field(
+        None,
+        description="Processing route (e.g. flotation, leach, CIL, heap leach).",
+    )
+    ore_type: Optional[str] = Field(
+        None,
+        description="Dominant ore type: oxide, transition, sulphide, or fresh.",
+    )
+    cutoff_type: Optional[str] = Field(
+        None,
+        description="Cut-off type: grade cut-off, NSR cut-off, or pit shell.",
+    )
+    economic_year: Optional[str] = Field(
+        None,
+        description="Year of metal price and cost assumptions used in economics.",
+    )
+    effective_date: Optional[str] = Field(
+        None,
+        description="Effective date of the mineral resource or reserve statement.",
+    )
+    primary_commodity: Optional[str] = Field(
+        None,
+        description="Primary commodity symbol for peer matching (e.g. Cu, Au, Li).",
+    )

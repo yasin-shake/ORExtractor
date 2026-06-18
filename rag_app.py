@@ -24,13 +24,16 @@ _MAX_HISTORY_TURNS = 10  # user+assistant pairs to keep in conversation history
 
 # Domain instruction shared by the CLI, API and Streamlit chat surfaces.
 SYSTEM_INSTRUCTION = (
-    "You are a technical assistant specialised in NI 43-101 mineral project reports. "
+    "You are a technical due diligence assistant specialised in NI 43-101 mineral project "
+    "reports (Form 43-101F1). Use chapter-directed retrieval: cite the NI Item number and "
+    "section title (e.g. Item 14 — Mineral Resource Estimates) alongside page numbers. "
     "Answer using only the supplied context. When you state figures such as resource "
     "tonnages, grades, contained metal, cut-off grades, NPV, IRR or capital costs, quote "
     "them exactly as written and include their units. Where possible, cite the relevant "
-    "report section, page number and the Qualified Person responsible. If the context is "
-    "incomplete, say what is known and what is unknown. If the context is not relevant, "
-    "say you do not know."
+    "report section, NI Item, page number and the Qualified Person responsible. "
+    "When comparing to peers, state typical ranges and flag outliers. "
+    "If the context is incomplete, say what is known and what is unknown. "
+    "If the context is not relevant, say you do not know."
 )
 
 _STOPWORDS = frozenset(
@@ -400,20 +403,51 @@ def parse_pdf_to_documents(
         for c_idx, chunk in enumerate(_chunk_ocr_text("\n\n".join(texts), chunk_size)):
             docs.append(Document(
                 page_content=chunk,
-                metadata={"source": pdf_path.name, "page": page_no, "chunk": c_idx, "type": "text"},
+                metadata={
+                    "source": pdf_path.name,
+                    "page": page_no,
+                    "chunk": c_idx,
+                    "type": "text",
+                    "ni_item": 0,
+                    "section_title": "",
+                },
             ))
 
     for t_idx, (table_content, page_no) in enumerate(table_items):
         docs.append(Document(
             page_content=table_content,
-            metadata={"source": pdf_path.name, "page": page_no, "chunk": 1000 + t_idx, "type": "table"},
+            metadata={
+                "source": pdf_path.name,
+                "page": page_no,
+                "chunk": 1000 + t_idx,
+                "type": "table",
+                "ni_item": 0,
+                "section_title": "",
+            },
         ))
 
     for i_idx, (image_content, page_no) in enumerate(image_items):
         docs.append(Document(
             page_content=image_content,
-            metadata={"source": pdf_path.name, "page": page_no, "chunk": 2000 + i_idx, "type": "image"},
+            metadata={
+                "source": pdf_path.name,
+                "page": page_no,
+                "chunk": 2000 + i_idx,
+                "type": "image",
+                "ni_item": 0,
+                "section_title": "",
+            },
         ))
+
+    from chapter_index import (
+        build_chapter_index_from_documents,
+        save_chapter_index,
+        tag_documents_with_items,
+    )
+
+    chapters = build_chapter_index_from_documents(docs)
+    docs = tag_documents_with_items(docs, chapters)
+    save_chapter_index(Path(os.getenv("RAG_EXTRACTED_DIR", "extracted_data")), pdf_path.name, chapters)
 
     return docs
 
@@ -482,11 +516,70 @@ def ingest(settings: Settings, rebuild: bool = False) -> None:
     print(f"\nIngestion complete. {', '.join(parts)} in '{settings.collection_name}'.")
 
 
+def reindex_chapters(settings: Settings, vectorstore: Chroma) -> None:
+    """Re-parse PDFs to rebuild chapter indexes and patch chunk ni_item metadata."""
+    from chapter_index import reindex_chapters_for_pdf
+
+    pdf_paths = list(iter_pdf_paths(settings.knowledge_dir, settings.extra_pdf_dirs))
+    if not pdf_paths:
+        print("No PDFs found to reindex.")
+        return
+
+    updated = 0
+    for pdf_path in tqdm(pdf_paths, desc="Reindexing chapters", unit="pdf"):
+        chapters, docs = reindex_chapters_for_pdf(
+            pdf_path,
+            settings.chunk_size,
+            parse_pdf_to_documents,
+            settings.extracted_dir,
+        )
+        if not docs:
+            continue
+        ids: List[str] = []
+        metadatas: List[dict] = []
+        for d in docs:
+            page_num = int(d.metadata.get("page", -1) or -1)
+            chunk_idx = int(d.metadata.get("chunk", 0) or 0)
+            ids.append(build_doc_id(pdf_path.name, page_num, chunk_idx, d.page_content))
+            metadatas.append(dict(d.metadata))
+        try:
+            vectorstore._collection.update(ids=ids, metadatas=metadatas)
+            updated += len(ids)
+            tqdm.write(f"  {pdf_path.name}: {len(chapters)} chapters, {len(ids)} chunks tagged")
+        except Exception as exc:
+            tqdm.write(f"  {pdf_path.name}: metadata update failed ({exc}); re-ingest recommended")
+
+    print(f"Chapter reindex complete. Updated metadata on {updated} chunks.")
+
+
+def _build_chroma_filter(
+    filter_sources: Optional[List[str]] = None,
+    filter_items: Optional[List[int]] = None,
+) -> Optional[dict]:
+    clauses: List[dict] = []
+    if filter_sources and len(filter_sources) == 1:
+        clauses.append({"source": filter_sources[0]})
+    elif filter_sources:
+        clauses.append({"source": {"$in": list(filter_sources)}})
+    if filter_items:
+        items = [int(i) for i in filter_items if int(i) > 0]
+        if len(items) == 1:
+            clauses.append({"ni_item": items[0]})
+        elif items:
+            clauses.append({"ni_item": {"$in": items}})
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
+
+
 def _retrieve_and_rerank(
     vectorstore: Chroma,
     question: str,
     top_k: int,
     filter_sources: Optional[List[str]] = None,
+    filter_items: Optional[List[int]] = None,
 ) -> Tuple[List[str], List[dict]]:
     """Shared retrieval + rerank core. Returns (documents, metadatas) lists."""
     try:
@@ -497,12 +590,17 @@ def _retrieve_and_rerank(
         return [], []
 
     fetch_n = min(max(top_k * 4, top_k + 12), count)
-    chroma_filter = None
-    if filter_sources and len(filter_sources) == 1:
-        chroma_filter = {"source": filter_sources[0]}
-    elif filter_sources:
-        chroma_filter = {"source": {"$in": list(filter_sources)}}
-    results = vectorstore.similarity_search_with_score(question, k=fetch_n, filter=chroma_filter)
+    chroma_filter = _build_chroma_filter(filter_sources, filter_items)
+    try:
+        results = vectorstore.similarity_search_with_score(
+            question, k=fetch_n, filter=chroma_filter
+        )
+    except Exception:
+        # Fallback when ni_item metadata missing on older index entries
+        chroma_filter = _build_chroma_filter(filter_sources, None)
+        results = vectorstore.similarity_search_with_score(
+            question, k=fetch_n, filter=chroma_filter
+        )
     documents = [r[0].page_content for r in results]
     metadatas  = [r[0].metadata    for r in results]
     distances  = [float(r[1])      for r in results]
@@ -519,7 +617,10 @@ def _format_parts(documents: List[str], metadatas: List[dict]) -> List[str]:
     for idx, (doc, metadata) in enumerate(zip(documents, metadatas), start=1):
         source = metadata.get("source", "unknown")
         page = metadata.get("page", "?")
-        parts.append(f"[{idx}] {source} page {page}\n{doc}")
+        ni_item = metadata.get("ni_item") or 0
+        section = metadata.get("section_title") or ""
+        item_label = f"Item {ni_item} ({section})" if ni_item else "section unknown"
+        parts.append(f"[{idx}] {source} {item_label} page {page}\n{doc}")
     return parts
 
 
@@ -545,13 +646,51 @@ def query_context(
     question: str,
     top_k: int,
     filter_sources: Optional[List[str]] = None,
+    filter_items: Optional[List[int]] = None,
 ) -> Tuple[str, List[dict]]:
     """Return retrieved context as a single joined string (used by chat/API)."""
-    documents, metadatas = _retrieve_and_rerank(vectorstore, question, top_k, filter_sources)
+    documents, metadatas = _retrieve_and_rerank(
+        vectorstore, question, top_k, filter_sources, filter_items=filter_items
+    )
     if not documents:
         return "", []
     parts = _format_parts(documents, metadatas)
     return "\n\n".join(parts), metadatas
+
+
+def query_by_items(
+    vectorstore: Chroma,
+    question: str,
+    items: List[int],
+    top_k: int,
+    filter_sources: Optional[List[str]] = None,
+) -> Tuple[str, List[dict]]:
+    """Retrieve context scoped to specific NI 43-101 Items."""
+    if not items:
+        return query_context(vectorstore, question, top_k, filter_sources)
+    per_item_k = max(2, top_k // len(items))
+    all_docs: List[str] = []
+    all_meta: List[dict] = []
+    seen: set = set()
+    for item in items:
+        docs, metas = _retrieve_and_rerank(
+            vectorstore,
+            question,
+            per_item_k,
+            filter_sources,
+            filter_items=[item],
+        )
+        for doc, meta in zip(docs, metas):
+            key = (meta.get("source"), meta.get("page"), meta.get("chunk"))
+            if key in seen:
+                continue
+            seen.add(key)
+            all_docs.append(doc)
+            all_meta.append(meta)
+    if not all_docs:
+        return query_context(vectorstore, question, top_k, filter_sources)
+    parts = _format_parts(all_docs[:top_k], all_meta[:top_k])
+    return "\n\n".join(parts), all_meta[:top_k]
 
 
 def _index_is_empty(vectorstore: Chroma) -> bool:
@@ -721,6 +860,10 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Extract a single report by filename (default: all ingested reports).",
     )
+    subparsers.add_parser(
+        "reindex-chapters",
+        help="Rebuild NI Item chapter indexes and patch chunk metadata without re-embedding.",
+    )
     return parser.parse_args()
 
 
@@ -739,6 +882,8 @@ def main() -> int:
                 chat(settings, vectorstore, llm)
             elif args.command == "extract":
                 run_extract(settings, vectorstore, llm, target_file=args.file)
+            elif args.command == "reindex-chapters":
+                reindex_chapters(settings, vectorstore)
     except KeyboardInterrupt:
         print("\nStopped.")
         return 1

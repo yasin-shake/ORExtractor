@@ -6,6 +6,7 @@ import fitz
 import streamlit as st
 from langchain_core.messages import HumanMessage
 
+from agent_chat import ChatTurn, agent_chat_enabled, run_agent_chat
 from extractor import extract_report, list_extractions
 from rag_app import (
     _is_short_greeting_or_thanks,
@@ -140,7 +141,7 @@ def _source_items(metadatas: List[dict]) -> List[Tuple[str, int, int]]:
     seen = set()
     out: List[Tuple[str, int, int]] = []
     for metadata in metadatas:
-        source = str(metadata.get("source", "unknown"))
+        source = str(metadata.get("source") or metadata.get("file") or "unknown")
         page = metadata.get("page", -1)
         chunk = metadata.get("chunk", -1)
         if not isinstance(page, int):
@@ -160,10 +161,11 @@ def _source_items(metadatas: List[dict]) -> List[Tuple[str, int, int]]:
 # ---------------------------------------------------------------------------
 
 _SUGGESTIONS = [
-    "What are the total mineral resources?",
-    "Summarise the economics section",
-    "What is the deposit type and host rock?",
-    "Who are the qualified persons?",
+    "Is the resource classification defensible given drill spacing?",
+    "Are QAQC results acceptable and complete?",
+    "Is the cut-off grade reasonable compared with peer reports?",
+    "What are the key technical red flags?",
+    "Should this project be Go, Conditional Go, Further Work, or No-Go?",
 ]
 
 
@@ -247,31 +249,65 @@ def render_ask_tab(settings, vectorstore, llm) -> None:
         with st.chat_message("assistant"):
             if _is_short_greeting_or_thanks(user_question):
                 answer = (
-                    "I answer questions from the indexed NI 43-101 reports. "
-                    "Ask something specific about the project, resources, economics or geology."
+                    "I answer NI 43-101 due diligence questions using chapter-directed retrieval. "
+                    "Ask about resources, QAQC, cut-off grades, economics, red flags, or peer benchmarks."
                 )
                 st.markdown(answer)
                 st.session_state.messages.append({"role": "assistant", "content": answer})
             else:
                 filter_sources: Optional[List[str]] = selected_pdfs if selected_pdfs else None
-                with st.spinner("Retrieving relevant context …"):
-                    context, metadatas = query_context(
-                        vectorstore,
-                        user_question,
-                        settings.top_k,
-                        filter_sources=filter_sources,
-                    )
-                if not context:
-                    answer = "I could not find relevant context in the indexed reports."
+                history = [
+                    ChatTurn(role=m["role"], content=m["content"])
+                    for m in st.session_state.messages[:-1]
+                ]
+                if agent_chat_enabled():
+                    with st.spinner("Running chapter-directed agent …"):
+                        result = run_agent_chat(
+                            settings,
+                            vectorstore,
+                            llm,
+                            user_question,
+                            pdf_filter=filter_sources,
+                            history=history,
+                        )
+                    answer = result.answer
                     st.markdown(answer)
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
+                    if result.routed_items:
+                        st.caption(
+                            "Items searched: "
+                            + ", ".join(f"Item {i}" for i in result.routed_items)
+                        )
+                    if result.assessment:
+                        st.info(f"Assessment: {result.assessment}")
+                    if result.flags:
+                        with st.expander("Flags"):
+                            for f in result.flags:
+                                st.markdown(f"- {f}")
+                    if result.peer_summary:
+                        with st.expander("Peer benchmark"):
+                            st.markdown(result.peer_summary)
+                    metadatas = result.sources
                 else:
-                    history_pairs = _conversation_pairs(st.session_state.messages[:-1])
-                    prompt = build_chat_prompt(user_question, context, history=history_pairs)
-                    answer = st.write_stream(
-                        chunk.content
-                        for chunk in llm.stream([HumanMessage(content=prompt)])
-                    )
+                    with st.spinner("Retrieving relevant context …"):
+                        context, metadatas = query_context(
+                            vectorstore,
+                            user_question,
+                            settings.top_k,
+                            filter_sources=filter_sources,
+                        )
+                    if not context:
+                        answer = "I could not find relevant context in the indexed reports."
+                        st.markdown(answer)
+                        st.session_state.messages.append({"role": "assistant", "content": answer})
+                        metadatas = []
+                    else:
+                        history_pairs = _conversation_pairs(st.session_state.messages[:-1])
+                        prompt = build_chat_prompt(user_question, context, history=history_pairs)
+                        answer = st.write_stream(
+                            chunk.content
+                            for chunk in llm.stream([HumanMessage(content=prompt)])
+                        )
+                if answer:
                     st.session_state.messages.append({"role": "assistant", "content": answer})
 
                     source_items = _source_items(metadatas)
