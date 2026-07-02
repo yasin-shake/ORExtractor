@@ -541,7 +541,7 @@ class NI43101Report(BaseModel):
         None,
         description="Deposit type (e.g. porphyry, VMS, skarn, IOCG, sediment-hosted).",
     )
-    mining_method: Optional[str] = Field(
+    primary_mining_method: Optional[str] = Field(
         None,
         description="Primary mining method: open pit, underground, or combined.",
     )

@@ -141,7 +141,7 @@ def get_embedder(settings: Settings) -> OpenAIEmbeddings:
     }
     if settings.openai_base_url:
         kwargs["base_url"] = settings.openai_base_url
-    return OpenAIEmbeddings(**kwargs)
+    return _CachedOpenAIEmbeddings(**kwargs)
 
 
 def get_chat_model(settings: Settings) -> ChatBedrockConverse:
@@ -269,6 +269,22 @@ def _save_manifest(chroma_dir: Path, manifest: dict) -> None:
     )
 
 
+_EMBED_CACHE: dict[str, list] = {}
+
+
+class _CachedOpenAIEmbeddings(OpenAIEmbeddings):
+    """OpenAIEmbeddings with a process-level embed_query cache.
+
+    Avoids re-embedding identical query strings across extraction passes and
+    multi-report runs in extract_all().
+    """
+
+    def embed_query(self, text: str) -> list:  # type: ignore[override]
+        if text not in _EMBED_CACHE:
+            _EMBED_CACHE[text] = super().embed_query(text)
+        return _EMBED_CACHE[text]
+
+
 _parser_logs_suppressed: bool = False
 
 
@@ -283,7 +299,7 @@ def _suppress_parser_logs() -> None:
     _parser_logs_suppressed = True
 
 
-def _chunk_ocr_text(text: str, chunk_size: int) -> List[str]:
+def _chunk_ocr_text(text: str, chunk_size: int, overlap: int = 0) -> List[str]:
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if not text:
         return []
@@ -297,7 +313,14 @@ def _chunk_ocr_text(text: str, chunk_size: int) -> List[str]:
         else:
             if buf:
                 out.append(buf)
-            buf = p[:chunk_size] if len(p) > chunk_size else p
+                if overlap:
+                    tail = buf[-overlap:].strip()
+                    next_start = f"{tail}\n\n{p}".strip() if tail else p
+                else:
+                    next_start = p
+                buf = next_start[:chunk_size] if len(next_start) > chunk_size else next_start
+            else:
+                buf = p[:chunk_size] if len(p) > chunk_size else p
     if buf:
         out.append(buf)
     return [c for c in out if c.strip()]
@@ -350,9 +373,44 @@ def _html_to_text(raw_html: str) -> str:
     return text.strip()
 
 
+def _html_table_to_markdown(raw_html: str) -> str:
+    """Convert a marker-pdf table HTML block to pipe-delimited markdown.
+
+    The LLM reads tabular columns directly from markdown rather than having to
+    mentally parse HTML tag nesting, reducing grade-misalignment errors and
+    token usage.  Falls back to plain text if no <tr>/<td> rows are found.
+    """
+    import html as _htmllib
+
+    rows: List[List[str]] = []
+    for row_match in re.finditer(r"(?is)<tr[^>]*>(.*?)</tr>", raw_html):
+        cells = re.findall(r"(?is)<t[dh][^>]*>(.*?)</t[dh]>", row_match.group(1))
+        row = []
+        for cell in cells:
+            cell_text = re.sub(r"(?s)<[^>]+>", " ", cell)
+            cell_text = _htmllib.unescape(cell_text)
+            cell_text = re.sub(r"\s+", " ", cell_text).strip()
+            row.append(cell_text.replace("|", "\\|"))
+        if any(row):
+            rows.append(row)
+
+    if not rows:
+        return _html_to_text(raw_html)
+
+    col_count = max(len(r) for r in rows)
+    rows = [r + [""] * (col_count - len(r)) for r in rows]
+    lines: List[str] = []
+    for i, row in enumerate(rows):
+        lines.append("| " + " | ".join(row) + " |")
+        if i == 0:
+            lines.append("|" + "|".join(" --- " for _ in row) + "|")
+    return "\n".join(lines)
+
+
 def parse_pdf_to_documents(
     pdf_path: Path,
     chunk_size: int,
+    chunk_overlap: int = 0,
 ) -> List[Document]:
     _suppress_parser_logs()
     tqdm.write("  Converting with marker-pdf …")
@@ -373,8 +431,11 @@ def parse_pdf_to_documents(
     table_items: List[tuple] = []
     image_items: List[tuple] = []
 
-    _SKIP_TYPES = {"Equation", "PageHeader", "PageFooter", "Handwriting"}
-    _TABLE_TYPES = {"Table", "TableGroup", "TableOfContents", "Form"}
+    # TableOfContents blocks are structure input, not searchable content.
+    # Indexing them pollutes retrieval: a TOC page scores high on almost every
+    # keyword query (it contains every section title) but carries no actual data.
+    _SKIP_TYPES = {"Equation", "PageHeader", "PageFooter", "Handwriting", "TableOfContents"}
+    _TABLE_TYPES = {"Table", "TableGroup", "Form"}
     # Figures/pictures are kept for their caption (and, if enabled, any LLM
     # description) rather than discarded — the surrounding <img> tag is stripped
     # by _html_to_text, leaving the textual context behind.
@@ -389,7 +450,9 @@ def parse_pdf_to_documents(
         if not raw_html:
             continue
         if block_type in _TABLE_TYPES:
-            table_items.append((raw_html, page_no))
+            # Store tables as pipe-markdown so the LLM reads columns directly
+            # rather than parsing HTML tag nesting during extraction.
+            table_items.append((_html_table_to_markdown(raw_html), page_no))
         elif block_type in _IMAGE_TYPES:
             text = _html_to_text(raw_html)
             if text:
@@ -400,7 +463,7 @@ def parse_pdf_to_documents(
                 page_texts.setdefault(page_no, []).append(text)
 
     for page_no, texts in sorted(page_texts.items()):
-        for c_idx, chunk in enumerate(_chunk_ocr_text("\n\n".join(texts), chunk_size)):
+        for c_idx, chunk in enumerate(_chunk_ocr_text("\n\n".join(texts), chunk_size, chunk_overlap)):
             docs.append(Document(
                 page_content=chunk,
                 metadata={
@@ -485,7 +548,7 @@ def ingest(settings: Settings, rebuild: bool = False) -> None:
             continue
 
         tqdm.write(f"\nParsing {pdf_path.name}...")
-        docs = parse_pdf_to_documents(pdf_path, settings.chunk_size)
+        docs = parse_pdf_to_documents(pdf_path, settings.chunk_size, settings.chunk_overlap)
         if not docs:
             tqdm.write(f"  No extractable content found in {pdf_path.name}.")
             continue
@@ -665,32 +728,22 @@ def query_by_items(
     top_k: int,
     filter_sources: Optional[List[str]] = None,
 ) -> Tuple[str, List[dict]]:
-    """Retrieve context scoped to specific NI 43-101 Items."""
+    """Retrieve context scoped to specific NI 43-101 Items.
+
+    Uses a single Chroma query with a $in filter across all requested items
+    rather than N separate queries, cutting embedding API calls from N to 1.
+    _build_chroma_filter already emits {"ni_item": {"$in": items}} when
+    len(items) > 1, so no special-casing is needed here.
+    """
     if not items:
         return query_context(vectorstore, question, top_k, filter_sources)
-    per_item_k = max(2, top_k // len(items))
-    all_docs: List[str] = []
-    all_meta: List[dict] = []
-    seen: set = set()
-    for item in items:
-        docs, metas = _retrieve_and_rerank(
-            vectorstore,
-            question,
-            per_item_k,
-            filter_sources,
-            filter_items=[item],
-        )
-        for doc, meta in zip(docs, metas):
-            key = (meta.get("source"), meta.get("page"), meta.get("chunk"))
-            if key in seen:
-                continue
-            seen.add(key)
-            all_docs.append(doc)
-            all_meta.append(meta)
-    if not all_docs:
+    docs, metas = _retrieve_and_rerank(
+        vectorstore, question, top_k, filter_sources, filter_items=items
+    )
+    if not docs:
         return query_context(vectorstore, question, top_k, filter_sources)
-    parts = _format_parts(all_docs[:top_k], all_meta[:top_k])
-    return "\n\n".join(parts), all_meta[:top_k]
+    parts = _format_parts(docs, metas)
+    return "\n\n".join(parts), metas
 
 
 def _index_is_empty(vectorstore: Chroma) -> bool:
@@ -871,8 +924,8 @@ def main() -> int:
     args = parse_args()
     try:
         settings = load_settings()
-        check_openai_connectivity(settings)
         if args.command == "ingest":
+            check_openai_connectivity(settings)
             ingest(settings, rebuild=args.rebuild)
         else:
             embedder = get_embedder(settings)

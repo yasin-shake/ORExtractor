@@ -62,7 +62,7 @@ def build_chapter_index_from_documents(docs: List[Document]) -> List[ChapterEntr
 
     for doc in docs:
         page = int(doc.metadata.get("page", 0) or 0)
-        detected = detect_item_from_text(doc.page_content[:500])
+        detected = detect_item_from_text(doc.page_content)
         if detected:
             item_num, title = detected
             if not headings or headings[-1][1] != item_num or headings[-1][0] != page:
@@ -106,7 +106,7 @@ def tag_documents_with_items(
             doc.metadata["ni_item"] = ch.item
             doc.metadata["section_title"] = ch.title
         else:
-            inline = detect_item_from_text(doc.page_content[:400])
+            inline = detect_item_from_text(doc.page_content)
             if inline:
                 doc.metadata["ni_item"] = inline[0]
                 doc.metadata["section_title"] = inline[1]

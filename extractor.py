@@ -176,7 +176,7 @@ _EXTRACTION_INSTRUCTION = (
     "or community-opposition notes.\n"
     "14. environmental.political_risk_flags — list explicit risk statements about resource "
     "nationalism, political instability, mining-code changes, or social licence issues.\n"
-    "15. Metadata tags — populate study_stage, deposit_type, mining_method, processing_route, "
+    "15. Metadata tags — populate study_stage, deposit_type, primary_mining_method, processing_route, "
     "ore_type, cutoff_type, economic_year, effective_date, primary_commodity from context."
 )
 
@@ -245,7 +245,7 @@ _EXTRACTION_PASSES: List[dict] = [
         "topics": [],
         "items": [1, 2, 4, 7, 8, 14, 15, 16, 17, 21, 22],
         "focus": (
-            "Extract ONLY portfolio metadata tags: study_stage, deposit_type, mining_method, "
+            "Extract ONLY portfolio metadata tags: study_stage, deposit_type, primary_mining_method, "
             "processing_route, ore_type, cutoff_type, economic_year, effective_date, "
             "primary_commodity. Infer from report purpose, property stage, geology deposit "
             "type, mining/processing sections, resource cut-off type, and economics. "
@@ -272,39 +272,63 @@ def _gather_context_for_topics(
     seen_chunks: set = set()
     blocks: List[str] = []
 
-    if items:
-        for item_num in items:
-            queries = _ITEM_QUERIES.get(item_num, [])
-            item_parts: List[str] = []
-            for q in queries:
-                parts, metadatas = query_chunks(
-                    vectorstore, q, per_query_k, filter_sources=[filename]
-                )
-                for part, meta in zip(parts, metadatas):
-                    if meta.get("ni_item") and int(meta.get("ni_item") or 0) not in (0, item_num):
-                        continue
-                    key = (meta.get("source"), meta.get("page"), meta.get("chunk"))
-                    if key in seen_chunks:
-                        continue
-                    seen_chunks.add(key)
-                    item_parts.append(part)
-            if item_parts:
-                blocks.append(f"### Context for: Item {item_num}\n" + "\n\n".join(item_parts))
-        return "\n\n".join(blocks)
-
-    for topic in topics:
-        queries = _TOPIC_QUERIES.get(topic, [])
-        topic_parts: List[str] = []
+    def _fetch_item(item_num: int) -> Tuple[int, List[Tuple[str, dict]]]:
+        queries = _ITEM_QUERIES.get(item_num, [])
+        out: List[Tuple[str, dict]] = []
         for q in queries:
             parts, metadatas = query_chunks(
                 vectorstore, q, per_query_k, filter_sources=[filename]
             )
             for part, meta in zip(parts, metadatas):
+                if meta.get("ni_item") and int(meta.get("ni_item") or 0) not in (0, item_num):
+                    continue
+                out.append((part, meta))
+        return item_num, out
+
+    def _fetch_topic(topic: str) -> Tuple[str, List[Tuple[str, dict]]]:
+        queries = _TOPIC_QUERIES.get(topic, [])
+        out: List[Tuple[str, dict]] = []
+        for q in queries:
+            parts, metadatas = query_chunks(
+                vectorstore, q, per_query_k, filter_sources=[filename]
+            )
+            for part, meta in zip(parts, metadatas):
+                out.append((part, meta))
+        return topic, out
+
+    if items:
+        item_results: dict = {}
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futs = {pool.submit(_fetch_item, n): n for n in items}
+            for fut in as_completed(futs):
+                item_num, pairs = fut.result()
+                item_results[item_num] = pairs
+        for item_num in items:
+            item_parts: List[str] = []
+            for part, meta in item_results.get(item_num, []):
                 key = (meta.get("source"), meta.get("page"), meta.get("chunk"))
                 if key in seen_chunks:
                     continue
                 seen_chunks.add(key)
-                topic_parts.append(part)
+                item_parts.append(part)
+            if item_parts:
+                blocks.append(f"### Context for: Item {item_num}\n" + "\n\n".join(item_parts))
+        return "\n\n".join(blocks)
+
+    topic_results: dict = {}
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futs = {pool.submit(_fetch_topic, t): t for t in topics}
+        for fut in as_completed(futs):
+            topic, pairs = fut.result()
+            topic_results[topic] = pairs
+    for topic in topics:
+        topic_parts: List[str] = []
+        for part, meta in topic_results.get(topic, []):
+            key = (meta.get("source"), meta.get("page"), meta.get("chunk"))
+            if key in seen_chunks:
+                continue
+            seen_chunks.add(key)
+            topic_parts.append(part)
         if topic_parts:
             blocks.append(f"### Context for: {topic}\n" + "\n\n".join(topic_parts))
     return "\n\n".join(blocks)

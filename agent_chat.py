@@ -279,7 +279,7 @@ def _tool_find_peer_reports(
             (target or {}).get("deposit_type"),
             ((target or {}).get("geology") or {}).get("deposit_type"),
         ),
-        mining_method=_pick(mining_method, (target or {}).get("mining_method")),
+        mining_method=_pick(mining_method, (target or {}).get("primary_mining_method"), (target or {}).get("mining_method")),
         study_stage=_pick(study_stage, (target or {}).get("study_stage")),
         limit=min(max(limit, 1), 12),
     )
@@ -641,25 +641,7 @@ def run_agent_tools_only(
     history: Optional[List[ChatTurn]] = None,
 ) -> AgentChatResult:
     """Run the tool chain without LLM (for testing routing/retrieval/benchmark)."""
-    ctx = AgentRunContext(
-        settings=settings,
-        vectorstore=vectorstore,
-        question=question,
-        pdf_filter=pdf_filter,
-        history=history,
-    )
-    _tool_route_question(ctx)
-    _tool_get_routing_playbook(ctx, ",".join(str(i) for i in ctx.routed_primary))
-    _tool_search_by_items(ctx, ",".join(str(i) for i in ctx.routed_primary))
-    if ctx.routed_cross:
-        _tool_search_by_items(ctx, ",".join(str(i) for i in ctx.routed_cross))
-    if pdf_filter and len(pdf_filter) == 1:
-        _tool_get_extraction(ctx)
-    peer_routing = resolve_items_for_question(question)
-    if peer_routing.needs_peer_benchmark or peer_routing.benchmark_template:
-        _tool_find_peer_reports(ctx)
-        _tool_benchmark_field(ctx)
-
+    ctx = prepare_agent_context(settings, vectorstore, question, pdf_filter, history)
     answer = _offline_answer_from_ctx(ctx, "dry-run — no LLM call")
     return AgentChatResult(
         answer=answer,
@@ -756,25 +738,7 @@ def _run_pipeline_chat(
     history: Optional[List[ChatTurn]] = None,
 ) -> AgentChatResult:
     """Deterministic fallback pipeline (pre-LangGraph behaviour)."""
-    ctx = AgentRunContext(
-        settings=settings,
-        vectorstore=vectorstore,
-        question=question,
-        pdf_filter=pdf_filter,
-        history=history,
-    )
-    _tool_route_question(ctx)
-    _tool_get_routing_playbook(ctx, ",".join(str(i) for i in ctx.routed_primary))
-    _tool_search_by_items(ctx, ",".join(str(i) for i in ctx.routed_primary))
-    if ctx.routed_cross:
-        _tool_search_by_items(ctx, ",".join(str(i) for i in ctx.routed_cross))
-    if pdf_filter and len(pdf_filter) == 1:
-        _tool_get_extraction(ctx)
-    peer_routing = resolve_items_for_question(question)
-    if peer_routing.needs_peer_benchmark or peer_routing.benchmark_template:
-        _tool_find_peer_reports(ctx)
-        _tool_benchmark_field(ctx)
-
+    ctx = prepare_agent_context(settings, vectorstore, question, pdf_filter, history)
     playbook = ctx.playbook_text
     parts = [
         f"=== Routed Items {ctx.routed_primary} / cross-check {ctx.routed_cross} ===",
