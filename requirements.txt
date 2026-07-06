@@ -30,3 +30,6 @@ tqdm
 python-dotenv
 requests
 pydantic>=2
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest                # tests/test_routing.py, test_benchmark.py, test_agent_tools.py
