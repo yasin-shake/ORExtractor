@@ -70,6 +70,11 @@ class Settings:
     top_k: int
     extracted_dir: Path
     extract_top_k: int
+    olmocr_server_url: Optional[str] = None
+    olmocr_api_key: str = ""
+    olmocr_model: str = "allenai/olmOCR-7B-0225-preview"
+    olmocr_workers: int = 4
+    spatial_dir: Path = Path("spatial_data")
 
 
 def load_settings() -> Settings:
@@ -103,6 +108,11 @@ def load_settings() -> Settings:
         top_k=int(os.getenv("RAG_TOP_K", "8")),
         extracted_dir=Path(os.getenv("RAG_EXTRACTED_DIR", "extracted_data")),
         extract_top_k=int(os.getenv("NI43101_EXTRACT_TOP_K", "12")),
+        olmocr_server_url=os.getenv("OLMOCR_SERVER_URL", "").strip() or None,
+        olmocr_api_key=os.getenv("OLMOCR_API_KEY", "").strip(),
+        olmocr_model=os.getenv("OLMOCR_MODEL", "allenai/olmOCR-7B-0225-preview"),
+        olmocr_workers=int(os.getenv("OLMOCR_WORKERS", "4")),
+        spatial_dir=Path(os.getenv("RAG_SPATIAL_DIR", "spatial_data")),
     )
 
 
@@ -144,13 +154,24 @@ def get_embedder(settings: Settings) -> OpenAIEmbeddings:
     return _CachedOpenAIEmbeddings(**kwargs)
 
 
-def get_chat_model(settings: Settings) -> ChatBedrockConverse:
+def get_chat_model(
+    settings: Settings, max_tokens: int = 4096, temperature: float = 0.35
+) -> ChatBedrockConverse:
+    # Spatial extraction passes a higher limit: a collar table with hundreds of
+    # holes cannot fit its structured output inside the 4096-token chat default.
+    # It also passes temperature=0 — run-to-run variance in table extraction
+    # showed up as whole datasets appearing/disappearing between identical runs.
+    from botocore.config import Config
+
+    # botocore's default 60s read timeout is shorter than a large structured
+    # extraction takes to generate — long-context passes were dying mid-response.
     return ChatBedrockConverse(
         model_id=settings.bedrock_model_id,
         provider="amazon",
-        temperature=0.35,
-        max_tokens=4096,
+        temperature=temperature,
+        max_tokens=max_tokens,
         region_name=settings.aws_region,
+        config=Config(read_timeout=300, connect_timeout=15, retries={"max_attempts": 2, "mode": "adaptive"}),
     )
 
 
@@ -285,18 +306,118 @@ class _CachedOpenAIEmbeddings(OpenAIEmbeddings):
         return _EMBED_CACHE[text]
 
 
-_parser_logs_suppressed: bool = False
+# ── olmocr prompt (YAML response format, compatible with allenai/olmOCR-7B) ───
+try:
+    from olmocr.prompts import build_no_anchoring_v4_yaml_prompt as _build_olmocr_prompt
+    _OLMOCR_PROMPT: str = _build_olmocr_prompt()
+except Exception:
+    _OLMOCR_PROMPT = (
+        "Below is an image of a page from a document. Extract all visible text in reading order.\n"
+        "Convert tables to HTML (<table>...</table>). Use LaTeX for equations.\n"
+        "Respond with ONLY a YAML document containing exactly these fields:\n"
+        "primary_language: <ISO 639-1 code>\n"
+        "is_rotation_valid: <true or false>\n"
+        "rotation_correction: <0, 90, 180, or 270>\n"
+        "is_table: <true if most of the page is a table>\n"
+        "is_diagram: <true if most of the page is a figure or diagram>\n"
+        "natural_text: |\n"
+        "  <extracted page text>\n"
+    )
 
 
-def _suppress_parser_logs() -> None:
-    global _parser_logs_suppressed
-    if _parser_logs_suppressed:
-        return
-    import logging
-    for _noisy in ("marker", "surya", "texify", "transformers", "datasets",
-                   "PIL", "huggingface_hub", "filelock"):
-        logging.getLogger(_noisy).setLevel(logging.WARNING)
-    _parser_logs_suppressed = True
+def _olmocr_render_page_b64(pdf_path: Path, page_num: int, longest_dim: int = 1920) -> str:
+    """Render a PDF page to a base64-encoded PNG using PyMuPDF (no poppler needed)."""
+    import fitz  # PyMuPDF — already a project dependency
+    import base64
+
+    doc = fitz.open(str(pdf_path))
+    try:
+        page = doc[page_num - 1]  # page_num is 1-indexed
+        rect = page.rect
+        scale = longest_dim / max(rect.width, rect.height)
+        mat = fitz.Matrix(scale, scale)
+        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+        png_bytes = pix.tobytes("png")
+    finally:
+        doc.close()
+    return base64.b64encode(png_bytes).decode("utf-8")
+
+
+def _olmocr_parse_yaml_response(raw: str) -> Optional[dict]:
+    """Parse an olmocr YAML response, stripping markdown fences if present."""
+    import yaml
+
+    text = raw.strip()
+    text = re.sub(r"^```(?:yaml)?\s*\n?", "", text, flags=re.I)
+    text = re.sub(r"\n?```\s*$", "", text)
+    try:
+        data = yaml.safe_load(text)
+        return data if isinstance(data, dict) else None
+    except yaml.YAMLError:
+        return None
+
+
+def _olmocr_process_page(
+    client,        # pre-instantiated OpenAI client (shared across the thread pool)
+    model: str,
+    pdf_path: Path,
+    page_num: int,
+) -> Tuple[int, str, bool, bool]:
+    """Call the olmocr-compatible inference server for a single PDF page.
+
+    Returns (page_num, natural_text, is_table, is_diagram).
+    Falls back to empty string on any failure.
+    """
+    try:
+        b64 = _olmocr_render_page_b64(pdf_path, page_num)
+    except Exception as exc:
+        tqdm.write(f"    page {page_num}: render failed — {exc}")
+        return page_num, "", False, False
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    {"type": "text", "text": _OLMOCR_PROMPT},
+                ],
+            }],
+            temperature=0.1,
+            max_tokens=8192,
+        )
+        raw = resp.choices[0].message.content or ""
+        data = _olmocr_parse_yaml_response(raw)
+        if not data:
+            tqdm.write(f"    page {page_num}: YAML parse failed, raw snippet: {raw[:120]!r}")
+            return page_num, "", False, False
+        return (
+            page_num,
+            data.get("natural_text") or "",
+            bool(data.get("is_table", False)),
+            bool(data.get("is_diagram", False)),
+        )
+    except Exception as exc:
+        tqdm.write(f"    page {page_num}: inference call failed — {exc}")
+        return page_num, "", False, False
+
+
+def _pymupdf_fallback_text(pdf_path: Path) -> dict[int, str]:
+    """Extract text from each page using PyMuPDF's text layer (instant, no GPU)."""
+    import fitz
+
+    result: dict[int, str] = {}
+    try:
+        doc = fitz.open(str(pdf_path))
+        for i, page in enumerate(doc, start=1):
+            text = page.get_text("text").strip()
+            if text:
+                result[i] = text
+        doc.close()
+    except Exception as exc:
+        tqdm.write(f"  PyMuPDF fallback failed: {exc}")
+    return result
 
 
 def _chunk_ocr_text(text: str, chunk_size: int, overlap: int = 0) -> List[str]:
@@ -326,39 +447,24 @@ def _chunk_ocr_text(text: str, chunk_size: int, overlap: int = 0) -> List[str]:
     return [c for c in out if c.strip()]
 
 
-_marker_converter = None
+def _postprocess_olmocr_page(natural_text: str) -> Tuple[Optional[str], Optional[str]]:
+    """Split olmocr natural_text into (body_text, table_markdown).
 
-
-def _get_marker_converter():
-    """Build (once) and cache the marker-pdf converter configured for chunk output.
-
-    The chunk renderer flattens every page into a list of top-level blocks, each
-    carrying its ``block_type``, fully-assembled ``html`` and 0-indexed ``page``.
+    olmocr embeds HTML tables inline inside the page markdown. We extract
+    them as separate table documents (consistent with the pre-olmocr pipeline)
+    and return the remaining prose separately.
     """
-    global _marker_converter
-    if _marker_converter is not None:
-        return _marker_converter
+    tables: List[str] = []
+    body = natural_text
 
-    from marker.converters.pdf import PdfConverter
-    from marker.models import create_model_dict
-    from marker.config.parser import ConfigParser
+    for m in re.finditer(r"(?is)<table[^>]*>.*?</table>", natural_text):
+        tables.append(_html_table_to_markdown(m.group(0)))
 
-    config_parser = ConfigParser({
-        "output_format": "chunks",
-        "disable_image_extraction": True,
-        # These NI 43-101 PDFs are digital (embedded text layer), so trust the
-        # provider text and skip Surya's recognition model — the slow step that
-        # otherwise re-OCRs every page. Scanned PDFs will yield no text and are
-        # handled by the empty-result skip in ingest().
-        "disable_ocr": True,
-    })
-    _marker_converter = PdfConverter(
-        config=config_parser.generate_config_dict(),
-        artifact_dict=create_model_dict(),
-        processor_list=config_parser.get_processors(),
-        renderer=config_parser.get_renderer(),
-    )
-    return _marker_converter
+    body = re.sub(r"(?is)<table[^>]*>.*?</table>", "", body)
+    # Drop bare image references  ![alt](path.png)  left by olmocr figure handling
+    body = re.sub(r"!\[.*?\]\([^)]*\.png[^)]*\)", "", body)
+    body = body.strip() or None
+    return body, "\n\n".join(tables) if tables else None
 
 
 def _html_to_text(raw_html: str) -> str:
@@ -411,96 +517,108 @@ def parse_pdf_to_documents(
     pdf_path: Path,
     chunk_size: int,
     chunk_overlap: int = 0,
+    settings: Optional["Settings"] = None,
 ) -> List[Document]:
-    _suppress_parser_logs()
-    tqdm.write("  Converting with marker-pdf …")
-    try:
-        converter = _get_marker_converter()
-        rendered = converter(str(pdf_path))
-        blocks = list(getattr(rendered, "blocks", None) or [])
-    except Exception as exc:
-        tqdm.write(f"  marker-pdf conversion failed: {exc}")
-        return []
-
-    if not blocks:
-        tqdm.write("  marker-pdf produced no output")
-        return []
-
     docs: List[Document] = []
-    page_texts: dict[int, List[str]] = {}
-    table_items: List[tuple] = []
-    image_items: List[tuple] = []
 
-    # TableOfContents blocks are structure input, not searchable content.
-    # Indexing them pollutes retrieval: a TOC page scores high on almost every
-    # keyword query (it contains every section title) but carries no actual data.
-    _SKIP_TYPES = {"Equation", "PageHeader", "PageFooter", "Handwriting", "TableOfContents"}
-    _TABLE_TYPES = {"Table", "TableGroup", "Form"}
-    # Figures/pictures are kept for their caption (and, if enabled, any LLM
-    # description) rather than discarded — the surrounding <img> tag is stripped
-    # by _html_to_text, leaving the textual context behind.
-    _IMAGE_TYPES = {"Picture", "PictureGroup", "Figure", "FigureGroup"}
+    # ── olmocr path ──────────────────────────────────────────────────────────
+    if settings and settings.olmocr_server_url:
+        import fitz
 
-    for block in blocks:
-        page_no = (getattr(block, "page", 0) or 0) + 1  # marker is 0-indexed
-        block_type = str(getattr(block, "block_type", ""))
-        if block_type in _SKIP_TYPES:
-            continue
-        raw_html = (getattr(block, "html", "") or "").strip()
-        if not raw_html:
-            continue
-        if block_type in _TABLE_TYPES:
-            # Store tables as pipe-markdown so the LLM reads columns directly
-            # rather than parsing HTML tag nesting during extraction.
-            table_items.append((_html_table_to_markdown(raw_html), page_no))
-        elif block_type in _IMAGE_TYPES:
-            text = _html_to_text(raw_html)
-            if text:
-                image_items.append((text, page_no))
-        else:
-            text = _html_to_text(raw_html)
-            if text:
-                page_texts.setdefault(page_no, []).append(text)
+        tqdm.write("  Converting with olmocr …")
+        try:
+            doc_fitz = fitz.open(str(pdf_path))
+            n_pages = len(doc_fitz)
+            doc_fitz.close()
+        except Exception as exc:
+            tqdm.write(f"  Could not open PDF: {exc}")
+            return []
 
-    for page_no, texts in sorted(page_texts.items()):
-        for c_idx, chunk in enumerate(_chunk_ocr_text("\n\n".join(texts), chunk_size, chunk_overlap)):
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from openai import OpenAI as _OAIClient
+
+        # Instantiate once — all worker threads share the HTTP connection pool.
+        olmocr_client = _OAIClient(
+            api_key=settings.olmocr_api_key or "olmocr",
+            base_url=settings.olmocr_server_url,
+            timeout=120.0,
+        )
+
+        page_results: dict[int, Tuple[str, bool, bool]] = {}
+        with ThreadPoolExecutor(max_workers=settings.olmocr_workers) as pool:
+            futs = {
+                pool.submit(
+                    _olmocr_process_page,
+                    olmocr_client,
+                    settings.olmocr_model,
+                    pdf_path,
+                    pn,
+                ): pn
+                for pn in range(1, n_pages + 1)
+            }
+            for fut in as_completed(futs):
+                pn, text, is_tbl, is_diag = fut.result()
+                page_results[pn] = (text, is_tbl, is_diag)
+
+        table_items: List[Tuple[str, int]] = []
+        for page_no in sorted(page_results):
+            natural_text, is_tbl, is_diag = page_results[page_no]
+            if not natural_text:
+                continue
+            body, tables_md = _postprocess_olmocr_page(natural_text)
+            if tables_md:
+                table_items.append((tables_md, page_no))
+            if body and not is_diag:
+                for c_idx, chunk in enumerate(_chunk_ocr_text(body, chunk_size, chunk_overlap)):
+                    docs.append(Document(
+                        page_content=chunk,
+                        metadata={
+                            "source": pdf_path.name,
+                            "page": page_no,
+                            "chunk": c_idx,
+                            "type": "text",
+                            "ni_item": 0,
+                            "section_title": "",
+                        },
+                    ))
+
+        for t_idx, (table_content, page_no) in enumerate(table_items):
             docs.append(Document(
-                page_content=chunk,
+                page_content=table_content,
                 metadata={
                     "source": pdf_path.name,
                     "page": page_no,
-                    "chunk": c_idx,
-                    "type": "text",
+                    "chunk": 1000 + t_idx,
+                    "type": "table",
                     "ni_item": 0,
                     "section_title": "",
                 },
             ))
 
-    for t_idx, (table_content, page_no) in enumerate(table_items):
-        docs.append(Document(
-            page_content=table_content,
-            metadata={
-                "source": pdf_path.name,
-                "page": page_no,
-                "chunk": 1000 + t_idx,
-                "type": "table",
-                "ni_item": 0,
-                "section_title": "",
-            },
-        ))
+    # ── PyMuPDF fallback (no olmocr server configured) ───────────────────────
+    else:
+        tqdm.write("  OLMOCR_SERVER_URL not set — using PyMuPDF text-layer fallback")
+        page_texts = _pymupdf_fallback_text(pdf_path)
+        if not page_texts:
+            tqdm.write(f"  No extractable text in {pdf_path.name}")
+            return []
+        for page_no, text in sorted(page_texts.items()):
+            for c_idx, chunk in enumerate(_chunk_ocr_text(text, chunk_size, chunk_overlap)):
+                docs.append(Document(
+                    page_content=chunk,
+                    metadata={
+                        "source": pdf_path.name,
+                        "page": page_no,
+                        "chunk": c_idx,
+                        "type": "text",
+                        "ni_item": 0,
+                        "section_title": "",
+                    },
+                ))
 
-    for i_idx, (image_content, page_no) in enumerate(image_items):
-        docs.append(Document(
-            page_content=image_content,
-            metadata={
-                "source": pdf_path.name,
-                "page": page_no,
-                "chunk": 2000 + i_idx,
-                "type": "image",
-                "ni_item": 0,
-                "section_title": "",
-            },
-        ))
+    if not docs:
+        tqdm.write(f"  No content extracted from {pdf_path.name}")
+        return []
 
     from chapter_index import (
         build_chapter_index_from_documents,
@@ -510,8 +628,8 @@ def parse_pdf_to_documents(
 
     chapters = build_chapter_index_from_documents(docs)
     docs = tag_documents_with_items(docs, chapters)
-    save_chapter_index(Path(os.getenv("RAG_EXTRACTED_DIR", "extracted_data")), pdf_path.name, chapters)
-
+    extracted_dir = settings.extracted_dir if settings else Path(os.getenv("RAG_EXTRACTED_DIR", "extracted_data"))
+    save_chapter_index(extracted_dir, pdf_path.name, chapters)
     return docs
 
 
@@ -548,7 +666,7 @@ def ingest(settings: Settings, rebuild: bool = False) -> None:
             continue
 
         tqdm.write(f"\nParsing {pdf_path.name}...")
-        docs = parse_pdf_to_documents(pdf_path, settings.chunk_size, settings.chunk_overlap)
+        docs = parse_pdf_to_documents(pdf_path, settings.chunk_size, settings.chunk_overlap, settings)
         if not docs:
             tqdm.write(f"  No extractable content found in {pdf_path.name}.")
             continue
@@ -590,10 +708,11 @@ def reindex_chapters(settings: Settings, vectorstore: Chroma) -> None:
 
     updated = 0
     for pdf_path in tqdm(pdf_paths, desc="Reindexing chapters", unit="pdf"):
+        parse_fn = lambda p, cs: parse_pdf_to_documents(p, cs, settings.chunk_overlap, settings)
         chapters, docs = reindex_chapters_for_pdf(
             pdf_path,
             settings.chunk_size,
-            parse_pdf_to_documents,
+            parse_fn,
             settings.extracted_dir,
         )
         if not docs:
@@ -618,6 +737,7 @@ def reindex_chapters(settings: Settings, vectorstore: Chroma) -> None:
 def _build_chroma_filter(
     filter_sources: Optional[List[str]] = None,
     filter_items: Optional[List[int]] = None,
+    filter_types: Optional[List[str]] = None,
 ) -> Optional[dict]:
     clauses: List[dict] = []
     if filter_sources and len(filter_sources) == 1:
@@ -630,6 +750,11 @@ def _build_chroma_filter(
             clauses.append({"ni_item": items[0]})
         elif items:
             clauses.append({"ni_item": {"$in": items}})
+    if filter_types:
+        if len(filter_types) == 1:
+            clauses.append({"type": filter_types[0]})
+        else:
+            clauses.append({"type": {"$in": list(filter_types)}})
     if not clauses:
         return None
     if len(clauses) == 1:
@@ -643,6 +768,7 @@ def _retrieve_and_rerank(
     top_k: int,
     filter_sources: Optional[List[str]] = None,
     filter_items: Optional[List[int]] = None,
+    filter_types: Optional[List[str]] = None,
 ) -> Tuple[List[str], List[dict]]:
     """Shared retrieval + rerank core. Returns (documents, metadatas) lists."""
     try:
@@ -653,14 +779,14 @@ def _retrieve_and_rerank(
         return [], []
 
     fetch_n = min(max(top_k * 4, top_k + 12), count)
-    chroma_filter = _build_chroma_filter(filter_sources, filter_items)
+    chroma_filter = _build_chroma_filter(filter_sources, filter_items, filter_types)
     try:
         results = vectorstore.similarity_search_with_score(
             question, k=fetch_n, filter=chroma_filter
         )
     except Exception:
         # Fallback when ni_item metadata missing on older index entries
-        chroma_filter = _build_chroma_filter(filter_sources, None)
+        chroma_filter = _build_chroma_filter(filter_sources, None, filter_types)
         results = vectorstore.similarity_search_with_score(
             question, k=fetch_n, filter=chroma_filter
         )
@@ -692,13 +818,17 @@ def query_chunks(
     question: str,
     top_k: int,
     filter_sources: Optional[List[str]] = None,
+    filter_items: Optional[List[int]] = None,
+    filter_types: Optional[List[str]] = None,
 ) -> Tuple[List[str], List[dict]]:
     """Return individual labelled chunk strings and their metadata dicts.
 
     Unlike query_context, chunks are never joined — safe for per-chunk
     deduplication in the extractor without risking misalignment on blank lines.
     """
-    documents, metadatas = _retrieve_and_rerank(vectorstore, question, top_k, filter_sources)
+    documents, metadatas = _retrieve_and_rerank(
+        vectorstore, question, top_k, filter_sources, filter_items, filter_types
+    )
     if not documents:
         return [], []
     return _format_parts(documents, metadatas), metadatas
@@ -849,6 +979,51 @@ def chat(settings: Settings, vectorstore: Chroma, llm: ChatBedrockConverse) -> N
             )
 
 
+def run_extract_spatial(
+    settings: Settings,
+    vectorstore: Chroma,
+    target_file: Optional[str] = None,
+) -> None:
+    """CLI entry point for spatial/geological-model extraction.
+
+    Builds its own LLM with a raised output limit (collar tables with hundreds
+    of holes overflow the 4096-token chat default). Existing spatial files are
+    skipped so a re-run never clobbers reviewed (`confirmed`) or digitized data —
+    delete the JSON to force re-extraction.
+    """
+    from extractor import extract_spatial, save_spatial_extraction
+
+    if _index_is_empty(vectorstore):
+        print("Vector index is empty. Run ingest first:")
+        print("  python rag_app.py ingest")
+        return
+
+    llm = get_chat_model(settings, max_tokens=16000, temperature=0.0)
+    if target_file:
+        targets = [target_file]
+    else:
+        targets = [p.name for p in iter_pdf_paths(settings.knowledge_dir, settings.extra_pdf_dirs)]
+
+    done = 0
+    for name in targets:
+        out_file = settings.spatial_dir / f"{Path(name).stem}.json"
+        if out_file.exists():
+            print(f"Already extracted (delete {out_file} to redo), skipping: {name}")
+            continue
+        print(f"Spatial extraction: {name}")
+        extraction = extract_spatial(settings, vectorstore, llm, name)
+        out_path = save_spatial_extraction(settings, extraction)
+        print(
+            f"  OK {len(extraction.boreholes)} boreholes, "
+            f"{len(extraction.lithology_intervals)} lithology intervals, "
+            f"{len(extraction.stratigraphic_pile)} strat units, "
+            f"{len(extraction.orientations)} orientations, "
+            f"{len(extraction.faults)} faults -> {out_path}"
+        )
+        done += 1
+    print(f"Spatial extraction complete. Extracted {done} report(s). Review and set 'confirmed' before modeling.")
+
+
 def run_extract(
     settings: Settings,
     vectorstore: Chroma,
@@ -892,8 +1067,8 @@ def save_extraction(settings: Settings, report) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "NI 43-101 RAG + structured extraction with marker-pdf + OpenAI embeddings "
-            "+ Claude (Anthropic) + Chroma."
+            "NI 43-101 RAG + structured extraction with olmocr + OpenAI embeddings "
+            "+ Claude via AWS Bedrock + Chroma."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -912,6 +1087,14 @@ def parse_args() -> argparse.Namespace:
         "--file",
         default=None,
         help="Extract a single report by filename (default: all ingested reports).",
+    )
+    extract_parser.add_argument(
+        "--spatial",
+        action="store_true",
+        help=(
+            "Extract spatial/geological-model data (boreholes, lithology, stratigraphy, "
+            "orientations, faults) to RAG_SPATIAL_DIR instead of the standard extraction."
+        ),
     )
     subparsers.add_parser(
         "reindex-chapters",
@@ -934,7 +1117,10 @@ def main() -> int:
             if args.command == "chat":
                 chat(settings, vectorstore, llm)
             elif args.command == "extract":
-                run_extract(settings, vectorstore, llm, target_file=args.file)
+                if args.spatial:
+                    run_extract_spatial(settings, vectorstore, target_file=args.file)
+                else:
+                    run_extract(settings, vectorstore, llm, target_file=args.file)
             elif args.command == "reindex-chapters":
                 reindex_chapters(settings, vectorstore)
     except KeyboardInterrupt:

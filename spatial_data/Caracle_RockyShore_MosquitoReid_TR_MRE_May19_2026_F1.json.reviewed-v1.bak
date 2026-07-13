@@ -1,0 +1,1275 @@
+{
+  "source_file": "Caracle_RockyShore_MosquitoReid_TR_MRE_May19_2026_F1.pdf",
+  "coordinate_system": "NAD27 Z21N (Brady and Huxter Lane tables); NAD83 UTMZ21N (Reid and Mosquito Hill planned holes)",
+  "boreholes": [
+    {
+      "hole_id": "BO-03-1",
+      "x": 602399.0,
+      "y": 5369188.0,
+      "z_collar": 145.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 122.0,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-03-2",
+      "x": 602321.0,
+      "y": 5369129.0,
+      "z_collar": 146.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 170.0,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-03-3",
+      "x": 602335.0,
+      "y": 5369078.0,
+      "z_collar": 147.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 165.0,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-03-4",
+      "x": 602499.0,
+      "y": 5369190.0,
+      "z_collar": 148.0,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 149.0,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-03-5",
+      "x": 602352.0,
+      "y": 5369037.0,
+      "z_collar": 141.0,
+      "azimuth": 160.0,
+      "dip": -50.0,
+      "total_depth_m": 170.0,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-03-6",
+      "x": 602431.0,
+      "y": 5369117.0,
+      "z_collar": 148.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 134.0,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "RO-04-7",
+      "x": 607922.0,
+      "y": 5373332.0,
+      "z_collar": 125.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 167.0,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "RO-04-8",
+      "x": 607752.0,
+      "y": 5373165.0,
+      "z_collar": 124.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 164.3,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "RO-04-9",
+      "x": 607589.0,
+      "y": 5373372.0,
+      "z_collar": 128.0,
+      "azimuth": 345.0,
+      "dip": -45.0,
+      "total_depth_m": 158.0,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "RO-04-10",
+      "x": 607278.0,
+      "y": 5372726.0,
+      "z_collar": 125.0,
+      "azimuth": 340.0,
+      "dip": -50.0,
+      "total_depth_m": 152.0,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "RO-04-11",
+      "x": 606613.0,
+      "y": 5371988.0,
+      "z_collar": 123.0,
+      "azimuth": 340.0,
+      "dip": -50.0,
+      "total_depth_m": 156.8,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "RO-04-12",
+      "x": 602622.0,
+      "y": 5368906.0,
+      "z_collar": 141.0,
+      "azimuth": 340.0,
+      "dip": -50.0,
+      "total_depth_m": 182.0,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "RO-04-13",
+      "x": 602528.0,
+      "y": 5369119.0,
+      "z_collar": 147.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 234.6,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "RO-04-14",
+      "x": 602033.0,
+      "y": 5369637.0,
+      "z_collar": 151.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 119.0,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "RO-04-15",
+      "x": 602259.0,
+      "y": 5369077.0,
+      "z_collar": 146.0,
+      "azimuth": 70.0,
+      "dip": -45.0,
+      "total_depth_m": 261.0,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-09-16",
+      "x": 602453.0,
+      "y": 5369124.0,
+      "z_collar": 150.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 287.59,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-09-17",
+      "x": 602382.0,
+      "y": 5369098.0,
+      "z_collar": 147.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 171.6,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-09-18",
+      "x": 602364.0,
+      "y": 5369148.0,
+      "z_collar": 150.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 185.32,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-09-19",
+      "x": 602273.0,
+      "y": 5369105.0,
+      "z_collar": 146.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 185.32,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-09-20",
+      "x": 602291.0,
+      "y": 5369060.0,
+      "z_collar": 146.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 176.17,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-09-21",
+      "x": 602309.0,
+      "y": 5369014.0,
+      "z_collar": 146.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 176.17,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-09-22",
+      "x": 602354.0,
+      "y": 5369037.0,
+      "z_collar": 148.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 173.74,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-11-23",
+      "x": 602452.0,
+      "y": 5369050.0,
+      "z_collar": 146.0,
+      "azimuth": null,
+      "dip": -90.0,
+      "total_depth_m": 227.05,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-11-24",
+      "x": 602452.0,
+      "y": 5369050.0,
+      "z_collar": 146.0,
+      "azimuth": null,
+      "dip": -60.0,
+      "total_depth_m": 284.99,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-11-25",
+      "x": 602475.0,
+      "y": 5369012.0,
+      "z_collar": 146.0,
+      "azimuth": null,
+      "dip": -60.0,
+      "total_depth_m": 340.46,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-11-26",
+      "x": 602475.0,
+      "y": 5369012.0,
+      "z_collar": 146.0,
+      "azimuth": null,
+      "dip": -60.0,
+      "total_depth_m": 336.8,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-11-27",
+      "x": 602504.0,
+      "y": 5368970.0,
+      "z_collar": 146.0,
+      "azimuth": null,
+      "dip": -60.0,
+      "total_depth_m": 373.38,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-11-28",
+      "x": 602486.0,
+      "y": 5369153.0,
+      "z_collar": 147.0,
+      "azimuth": null,
+      "dip": -65.0,
+      "total_depth_m": 304.15,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-11-29",
+      "x": 602305.0,
+      "y": 5369357.0,
+      "z_collar": 134.0,
+      "azimuth": null,
+      "dip": -60.0,
+      "total_depth_m": 316.99,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "BO-11-30",
+      "x": 602469.0,
+      "y": 5369007.0,
+      "z_collar": 146.0,
+      "azimuth": null,
+      "dip": -60.0,
+      "total_depth_m": 305.14,
+      "survey_points": [],
+      "source": "Table 6-3, page 780"
+    },
+    {
+      "hole_id": "HX-06-1",
+      "x": 604191.33,
+      "y": 5367811.03,
+      "z_collar": 182.3,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 54.0,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-2",
+      "x": 604191.33,
+      "y": 5367811.03,
+      "z_collar": 182.3,
+      "azimuth": 340.0,
+      "dip": -70.0,
+      "total_depth_m": 60.0,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-3",
+      "x": 604234.32,
+      "y": 5367824.37,
+      "z_collar": 184.53,
+      "azimuth": 340.0,
+      "dip": -70.0,
+      "total_depth_m": 166.8,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-4",
+      "x": 604234.32,
+      "y": 5367824.37,
+      "z_collar": 184.53,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 61.28,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-5",
+      "x": 604209.19,
+      "y": 5367765.28,
+      "z_collar": 183.63,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 66.16,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-6",
+      "x": 604209.19,
+      "y": 5367765.28,
+      "z_collar": 183.63,
+      "azimuth": 340.0,
+      "dip": -70.0,
+      "total_depth_m": 63.11,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-7",
+      "x": 604230.99,
+      "y": 5367719.29,
+      "z_collar": 186.83,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 124.05,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-8",
+      "x": 604230.99,
+      "y": 5367719.29,
+      "z_collar": 186.83,
+      "azimuth": 295.0,
+      "dip": -45.0,
+      "total_depth_m": 124.09,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-9",
+      "x": 604230.99,
+      "y": 5367719.29,
+      "z_collar": 186.83,
+      "azimuth": 295.0,
+      "dip": -90.0,
+      "total_depth_m": 127.1,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-10",
+      "x": 604208.76,
+      "y": 5367655.5,
+      "z_collar": 187.48,
+      "azimuth": 295.0,
+      "dip": -45.0,
+      "total_depth_m": 130.15,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-11",
+      "x": 604208.76,
+      "y": 5367655.5,
+      "z_collar": 187.48,
+      "azimuth": 295.0,
+      "dip": -70.0,
+      "total_depth_m": 122.83,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-12",
+      "x": 604139.46,
+      "y": 5367579.73,
+      "z_collar": 189.54,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 126.52,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-13",
+      "x": 603882.27,
+      "y": 5367550.62,
+      "z_collar": 185.61,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 186.23,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-14",
+      "x": 604553.94,
+      "y": 5368047.91,
+      "z_collar": 189.38,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 69.21,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-15",
+      "x": 604488.13,
+      "y": 5368263.44,
+      "z_collar": 169.89,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 151.5,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-16",
+      "x": 604157.44,
+      "y": 5367389.98,
+      "z_collar": 195.31,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 130.18,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-17",
+      "x": 603036.43,
+      "y": 5368103.95,
+      "z_collar": 145.84,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 130.18,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-06-18",
+      "x": 604419.41,
+      "y": 5366684.63,
+      "z_collar": 223.66,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 124.09,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-07-19",
+      "x": 603792.62,
+      "y": 5367509.61,
+      "z_collar": 186.61,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 184.0,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-07-20",
+      "x": 604073.36,
+      "y": 5367333.48,
+      "z_collar": 193.86,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 185.0,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-07-21",
+      "x": 604373.5,
+      "y": 5367369.26,
+      "z_collar": 207.17,
+      "azimuth": 340.0,
+      "dip": -50.0,
+      "total_depth_m": 422.0,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-07-22",
+      "x": 604052.8,
+      "y": 5367223.52,
+      "z_collar": 195.24,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 181.97,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-07-23",
+      "x": 603843.44,
+      "y": 5367364.64,
+      "z_collar": 192.42,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 223.0,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-07-24",
+      "x": 604220.9,
+      "y": 5367499.97,
+      "z_collar": 193.39,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 185.0,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-08-25",
+      "x": 603752.43,
+      "y": 5367324.24,
+      "z_collar": 195.0,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 282.0,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-08-26",
+      "x": 604190.63,
+      "y": 5367296.42,
+      "z_collar": 199.92,
+      "azimuth": 340.0,
+      "dip": -70.0,
+      "total_depth_m": 180.0,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-08-27",
+      "x": 604123.75,
+      "y": 5367481.46,
+      "z_collar": 192.32,
+      "azimuth": 340.0,
+      "dip": -70.0,
+      "total_depth_m": 120.0,
+      "survey_points": [],
+      "source": "Table 6-1, page 863"
+    },
+    {
+      "hole_id": "HX-08-28",
+      "x": 604093.84,
+      "y": 5367276.94,
+      "z_collar": 194.78,
+      "azimuth": 340.0,
+      "dip": -70.0,
+      "total_depth_m": 185.0,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-08-29",
+      "x": 604023.76,
+      "y": 5367168.79,
+      "z_collar": 196.42,
+      "azimuth": 340.0,
+      "dip": -70.0,
+      "total_depth_m": 180.0,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-08-30",
+      "x": 603947.1,
+      "y": 5367085.15,
+      "z_collar": 199.27,
+      "azimuth": 341.0,
+      "dip": -70.0,
+      "total_depth_m": 223.0,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-08-31",
+      "x": 603876.4,
+      "y": 5366992.32,
+      "z_collar": 202.91,
+      "azimuth": 341.0,
+      "dip": -70.0,
+      "total_depth_m": 241.0,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-32",
+      "x": 604232.11,
+      "y": 5367470.55,
+      "z_collar": 194.5,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 185.32,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-33",
+      "x": 604200.0,
+      "y": 5367524.0,
+      "z_collar": 199.0,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 170.02,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-34",
+      "x": 604168.82,
+      "y": 5367506.02,
+      "z_collar": 192.81,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 124.36,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-35",
+      "x": 604185.44,
+      "y": 5367458.5,
+      "z_collar": 195.24,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 154.84,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-36",
+      "x": 604201.24,
+      "y": 5367413.05,
+      "z_collar": 197.44,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 81.67,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-37",
+      "x": 604137.92,
+      "y": 5367441.5,
+      "z_collar": 192.78,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 157.89,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-38",
+      "x": 604092.85,
+      "y": 5367428.54,
+      "z_collar": 191.03,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 157.89,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-39",
+      "x": 604077.03,
+      "y": 5367475.82,
+      "z_collar": 189.47,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 124.36,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-40",
+      "x": 604024.98,
+      "y": 5367459.67,
+      "z_collar": 188.76,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 140.0,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-41",
+      "x": 604006.65,
+      "y": 5367506.57,
+      "z_collar": 187.42,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 66.45,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-42",
+      "x": 603962.65,
+      "y": 5367488.89,
+      "z_collar": 188.99,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 66.45,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-43",
+      "x": 603910.81,
+      "y": 5367471.45,
+      "z_collar": 190.55,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 90.83,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-44",
+      "x": 603929.31,
+      "y": 5367424.1,
+      "z_collar": 190.82,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 112.17,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-45",
+      "x": 603977.44,
+      "y": 5367442.43,
+      "z_collar": 189.97,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 115.21,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-09-46",
+      "x": 604043.57,
+      "y": 5367412.37,
+      "z_collar": 190.94,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 146.9,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-47",
+      "x": 604114.69,
+      "y": 5367359.09,
+      "z_collar": 192.65,
+      "azimuth": 340.0,
+      "dip": -55.0,
+      "total_depth_m": 178.31,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-48",
+      "x": 604050.86,
+      "y": 5367320.23,
+      "z_collar": 194.32,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 208.79,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-49",
+      "x": 604029.99,
+      "y": 5367307.74,
+      "z_collar": 194.3,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 187.45,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-50",
+      "x": 604033.67,
+      "y": 5367410.13,
+      "z_collar": 191.18,
+      "azimuth": 70.0,
+      "dip": -45.0,
+      "total_depth_m": 272.8,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-51",
+      "x": 604067.91,
+      "y": 5367618.86,
+      "z_collar": 185.26,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 108.2,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-52",
+      "x": 603934.69,
+      "y": 5367389.09,
+      "z_collar": 192.01,
+      "azimuth": 74.0,
+      "dip": -45.0,
+      "total_depth_m": 205.7,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-53",
+      "x": 603791.53,
+      "y": 5367245.97,
+      "z_collar": 198.98,
+      "azimuth": 70.0,
+      "dip": -45.0,
+      "total_depth_m": 225.5,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-54",
+      "x": 603869.76,
+      "y": 5367630.85,
+      "z_collar": 183.59,
+      "azimuth": 70.0,
+      "dip": -45.0,
+      "total_depth_m": 117.04,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-55",
+      "x": 604025.35,
+      "y": 5367214.95,
+      "z_collar": 195.27,
+      "azimuth": 70.0,
+      "dip": -45.0,
+      "total_depth_m": 220.9,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-56",
+      "x": 603782.87,
+      "y": 5367729.54,
+      "z_collar": 178.08,
+      "azimuth": 70.0,
+      "dip": -45.0,
+      "total_depth_m": 275.0,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-57",
+      "x": 603666.05,
+      "y": 5367722.22,
+      "z_collar": 174.08,
+      "azimuth": 70.0,
+      "dip": -45.0,
+      "total_depth_m": 255.0,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-58",
+      "x": 604253.35,
+      "y": 5367137.53,
+      "z_collar": 206.85,
+      "azimuth": 250.0,
+      "dip": -45.0,
+      "total_depth_m": 343.81,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-59",
+      "x": 604386.38,
+      "y": 5367236.79,
+      "z_collar": 212.0,
+      "azimuth": 265.0,
+      "dip": -70.0,
+      "total_depth_m": 321.87,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-10-60",
+      "x": 604246.54,
+      "y": 5367082.19,
+      "z_collar": 207.56,
+      "azimuth": 250.0,
+      "dip": -70.0,
+      "total_depth_m": 339.85,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 839"
+    },
+    {
+      "hole_id": "HX-11-61",
+      "x": 603728.0,
+      "y": 5367238.0,
+      "z_collar": 200.0,
+      "azimuth": 70.0,
+      "dip": -65.0,
+      "total_depth_m": 230.88,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 666"
+    },
+    {
+      "hole_id": "HX-11-62",
+      "x": 603746.0,
+      "y": 5367191.0,
+      "z_collar": 200.0,
+      "azimuth": 70.0,
+      "dip": -65.0,
+      "total_depth_m": 235.35,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 666"
+    },
+    {
+      "hole_id": "HX-11-63",
+      "x": 603652.0,
+      "y": 5367155.0,
+      "z_collar": 200.0,
+      "azimuth": 70.0,
+      "dip": -65.0,
+      "total_depth_m": 265.78,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 666"
+    },
+    {
+      "hole_id": "HX-11-64",
+      "x": 603690.0,
+      "y": 5367061.0,
+      "z_collar": 200.0,
+      "azimuth": 70.0,
+      "dip": -65.0,
+      "total_depth_m": 267.92,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 666"
+    },
+    {
+      "hole_id": "HX-11-65",
+      "x": 603649.0,
+      "y": 5367281.0,
+      "z_collar": 203.0,
+      "azimuth": 75.0,
+      "dip": -65.0,
+      "total_depth_m": 234.39,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 666"
+    },
+    {
+      "hole_id": "HX-11-66",
+      "x": 602448.0,
+      "y": 5367960.0,
+      "z_collar": 138.0,
+      "azimuth": 340.0,
+      "dip": -65.0,
+      "total_depth_m": 235.0,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 666"
+    },
+    {
+      "hole_id": "HX-11-67",
+      "x": 604131.0,
+      "y": 5367724.0,
+      "z_collar": 183.0,
+      "azimuth": 340.0,
+      "dip": -45.0,
+      "total_depth_m": 83.82,
+      "survey_points": [],
+      "source": "Table 6-1 (continued), page 666"
+    }
+  ],
+  "lithology_intervals": [
+    {
+      "hole_id": "HX06-01",
+      "from_m": 5.9,
+      "to_m": 34.5,
+      "unit_name": "Porphyry",
+      "description": "Mineralized interval",
+      "source": "Table 6-2, page 666"
+    },
+    {
+      "hole_id": "HX06-02",
+      "from_m": 4.6,
+      "to_m": 42.35,
+      "unit_name": "Porphyry",
+      "description": "Mineralized interval",
+      "source": "Table 6-2, page 666"
+    },
+    {
+      "hole_id": "HX06-03",
+      "from_m": 33.15,
+      "to_m": 36.15,
+      "unit_name": "Porphyry",
+      "description": "Mineralized interval",
+      "source": "Table 6-2, page 666"
+    },
+    {
+      "hole_id": "HX06-04",
+      "from_m": 39.25,
+      "to_m": 54.05,
+      "unit_name": "Porphyry",
+      "description": "Mineralized interval",
+      "source": "Table 6-2, page 666"
+    },
+    {
+      "hole_id": "HX06-05",
+      "from_m": 28.15,
+      "to_m": 70.0,
+      "unit_name": "Porphyry",
+      "description": "Mineralized interval",
+      "source": "Table 6-2, page 666"
+    },
+    {
+      "hole_id": "HX06-06",
+      "from_m": 27.15,
+      "to_m": 74.75,
+      "unit_name": "Porphyry",
+      "description": "Mineralized interval",
+      "source": "Table 6-2, page 666"
+    },
+    {
+      "hole_id": "HX06-07",
+      "from_m": 91.4,
+      "to_m": 107.3,
+      "unit_name": "Porphyry",
+      "description": "Mineralized interval",
+      "source": "Table 6-2, page 666"
+    },
+    {
+      "hole_id": "HX06-08",
+      "from_m": 79.75,
+      "to_m": 112.45,
+      "unit_name": "Porphyry",
+      "description": "Mineralized interval",
+      "source": "Table 6-2, page 666"
+    },
+    {
+      "hole_id": "HX06-09",
+      "from_m": 85.5,
+      "to_m": 95.5,
+      "unit_name": "Porphyry",
+      "description": "Mineralized interval",
+      "source": "Table 6-2, page 666"
+    },
+    {
+      "hole_id": "HX06-10",
+      "from_m": 117.0,
+      "to_m": 128.55,
+      "unit_name": "Porphyry",
+      "description": "Mineralized interval",
+      "source": "Table 6-2, page 666"
+    }
+  ],
+  "stratigraphic_pile": [
+    {
+      "unit_name": "Overburden",
+      "series_name": null,
+      "order_top_down": 1,
+      "relative_age": null,
+      "source": "Table 14-2, page 493; Table 14-16, page 279"
+    },
+    {
+      "unit_name": "Graphitic Shale, Siltstone, Sandstone (Upper Package)",
+      "series_name": "North Steady Pond Formation",
+      "order_top_down": 2,
+      "relative_age": null,
+      "source": "Section 7.4.1, page 1012; Section 7.1.3, page 1152"
+    },
+    {
+      "unit_name": "Quartz-Feldspar Crystal-Lithic Tuff and Volcaniclastic Sandstones (Middle Package)",
+      "series_name": "North Steady Pond Formation",
+      "order_top_down": 3,
+      "relative_age": null,
+      "source": "Section 7.4.1, page 1012; Section 7.1.3, page 1152"
+    },
+    {
+      "unit_name": "Mosquito Hill Porphyry",
+      "series_name": null,
+      "order_top_down": 4,
+      "relative_age": "Ordovician to Early Silurian (494 ± 14 Ma, 477 ± 8 Ma)",
+      "source": "Section 7.4.2, page 1248; Section 7.1.3, page 1152"
+    },
+    {
+      "unit_name": "Ophiolitic Mélange (Lower Package)",
+      "series_name": null,
+      "order_top_down": 5,
+      "relative_age": "Ordovician (assembled by 464 ± 7 Ma)",
+      "source": "Section 7.4.1, page 1012; Section 7.4.2, page 1248; Section 7.1.3, page 1152"
+    },
+    {
+      "unit_name": "Coy Pond Complex (Peridotite, Harzburgite, Serpentinite, Pyroxenite, Wehrlite, Gabbro, Diabase, Pillow Lavas)",
+      "series_name": "Penobscot Arc",
+      "order_top_down": 6,
+      "relative_age": "Cambrian (ca. 513-486 Ma)",
+      "source": "Section 7.1.3, page 1194; Section 7.1.2, page 1194"
+    }
+  ],
+  "orientations": [
+    {
+      "surface_name": "Porphyry-Mélange Contact",
+      "x": null,
+      "y": null,
+      "z": null,
+      "location_description": "Contact Trench, Mosquito Hill Deposit",
+      "dip": 50.0,
+      "dip_direction": 135.0,
+      "polarity": null,
+      "source": "Section 7.4.4, page 1248 (dips moderately ca. 50° to the south and east; converted strike to dip direction using right-hand rule)"
+    },
+    {
+      "surface_name": "Fold Limbs (Anticlinal Structure)",
+      "x": null,
+      "y": null,
+      "z": null,
+      "location_description": "Mosquito Hill Deposit mineralized wireframe",
+      "dip": 10.0,
+      "dip_direction": null,
+      "polarity": null,
+      "source": "Section 14.3.5, page 369 (fold limbs dipping approximately 5 to 15 degrees to the east and west)"
+    },
+    {
+      "surface_name": "Ribbon Mylonite at Porphyry-Mélange Basal Contact",
+      "x": null,
+      "y": null,
+      "z": null,
+      "location_description": "Drill hole HX10-53, Mosquito Hill Deposit",
+      "dip": null,
+      "dip_direction": null,
+      "polarity": null,
+      "source": "Section 7.4.4, page 1248 (narrow ~1 m interval; orientation not specified)"
+    },
+    {
+      "surface_name": "Ophiolitic Package (Reid Deposit)",
+      "x": null,
+      "y": null,
+      "z": null,
+      "location_description": "Reid Deposit",
+      "dip": null,
+      "dip_direction": 135.0,
+      "polarity": 1,
+      "source": "Section 7.3.2, page 1135 (right-way-up, inclined moderately to the southeast, facing away from Mount Cormack Subzone toward east and south)"
+    }
+  ],
+  "faults": [
+    {
+      "fault_name": "Red Indian Line (Mekwe'jit Line)",
+      "dip": null,
+      "dip_direction": null,
+      "trace_description": "Crustal-scale terrane-bounding structure separating peri-Laurentian Notre Dame Subzone from peri-Gondwanan Exploits Subzone; emplaced during Late Cambrian to Early Ordovician obduction, over-thickened during Taconic-Salinic orogenesis, reactivated during Wenlock to Pridoli extension and Early Devonian Acadian thrust inversion",
+      "offset_sense": null,
+      "affected_units": [
+        "Dunnage Zone",
+        "Humber Zone",
+        "Gander Zone"
+      ],
+      "source": "Section 7.1.1, page 456; Section 7.1.3, page 1138"
+    },
+    {
+      "fault_name": "Block Faults and Thrust Imbrication (Reid Deposit)",
+      "dip": null,
+      "dip_direction": null,
+      "trace_description": "Kilometre-scale block faulting and likely thrust imbrication affecting the ophiolitic host sequence at Reid Deposit; sequence interpreted as right-way-up, inclined moderately to the southeast",
+      "offset_sense": null,
+      "affected_units": [
+        "Coy Pond Complex",
+        "Ophiolitic Package"
+      ],
+      "source": "Section 7.3.2, page 1135"
+    }
+  ],
+  "cross_section_points": [],
+  "notes": "Brady drill hole collar summary (Table 6-3, page 780): 30 holes totalling 6,353.56 m in NAD27 Z21N. Huxter Lane drill hole collar summary (Table 6-1, page 863 and continued page 839, 666): 67 holes totalling 11,858.12 m in NAD27 Z21N. Planned drill holes for Reid and Mosquito Hill (Tables 26-3 and 26-4) are in NAD83 UTMZ21N but were not extracted as they are planned/proposed holes, not actual drilled collars. No downhole survey data tables were found in the provided context; all survey_points arrays are empty. Lithology intervals extracted from Table 6-2 (Significant drill intercepts, Mosquito Hill Zone, 2006-2011) represent only the first 10 rows of mineralized intercepts shown; the full table extends beyond this. Coordinate systems differ between historical drilling (NAD27 Z21N) and planned drilling (NAD83 UTMZ21N). Context notes that drill collar coordinates were converted from NAD27 to NAD83 using NTv2 transformation for the MRE, but the original collar tables retain NAD27 coordinates as printed.",
+  "confirmed": true
+}

@@ -22,8 +22,11 @@ python-multipart    # multipart file uploads
 streamlit
 
 # ── PDF parsing ───────────────────────────────────────────────────────────────
-marker-pdf          # layout-aware parsing, OCR (Surya), and table detection
-PyMuPDF             # fitz — PDF page rendering for the Streamlit source viewer
+# olmocr is NOT listed here — it ships with torch+transformers and is only
+# needed on the GPU inference server, not in the application container.
+# Install separately on the GPU host:  pip install olmocr
+pyyaml              # parse olmocr YAML page responses
+PyMuPDF             # fitz — PDF page rendering and text-layer fallback
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 tqdm

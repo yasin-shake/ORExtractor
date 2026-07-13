@@ -1,0 +1,11 @@
+# 3D geological modeling stack for build_gempy_model.py.
+# Kept out of requirements.txt on purpose: like marker-pdf's parsing, model
+# building runs off-server — the API/dashboard container never needs GemPy.
+#
+#   pip install -r requirements-spatial.txt
+
+gempy>=3.0
+plotly
+# Optional desktop 3D inspection (not needed for the Plotly HTML export):
+# pyvista
+# gempy_viewer

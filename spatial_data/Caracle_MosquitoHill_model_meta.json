@@ -1,0 +1,51 @@
+{
+  "source_file": "Caracle_RockyShore_MosquitoReid_TR_MRE_May19_2026_F1.pdf",
+  "confirmed": false,
+  "coordinate_system": "NAD27 Z21N (Brady and Huxter Lane tables); NAD83 UTMZ21N (planned drill tables)",
+  "resolution": 50,
+  "extent": [
+    601013.7070989652,
+    608941.2929010348,
+    5365665.337098965,
+    5374499.208907933,
+    -340.14,
+    336.41999999999996
+  ],
+  "series_mapping": {
+    "Strat_Series": [
+      "Mosquito Hill Zone (Porphyry) (top)",
+      "Mosquito Hill Zone (Porphyry) (base)"
+    ]
+  },
+  "orientation_sources": [
+    "derived: plane fit through 17 contact points"
+  ],
+  "assumptions_and_notes": [
+    "hole BO-11-24: inclined (-60.0\u00b0) but no azimuth \u2014 default-assumed vertical",
+    "hole BO-11-25: inclined (-60.0\u00b0) but no azimuth \u2014 default-assumed vertical",
+    "hole BO-11-26: inclined (-60.0\u00b0) but no azimuth \u2014 default-assumed vertical",
+    "hole BO-11-27: inclined (-60.0\u00b0) but no azimuth \u2014 default-assumed vertical",
+    "hole BO-11-28: inclined (-65.0\u00b0) but no azimuth \u2014 default-assumed vertical",
+    "hole BO-11-29: inclined (-60.0\u00b0) but no azimuth \u2014 default-assumed vertical",
+    "hole BO-11-30: inclined (-60.0\u00b0) but no azimuth \u2014 default-assumed vertical",
+    "15 hole ID(s) joined via canonical matching (punctuation/zero-padding differs between tables): HX06-01 -> HX-06-1, HX06-02 -> HX-06-2, HX06-03 -> HX-06-3, HX06-04 -> HX-06-4, HX06-05 -> HX-06-5, HX06-06 -> HX-06-6, HX06-07 -> HX-06-7, HX06-08 -> HX-06-8",
+    "ENVELOPE INTERPRETATION (--envelope): 34 points on mosquito hill zone (porphyry) top/base from intervals in 15 hole(s) \u2014 intercept boundaries treated as body contacts; a geologist must judge whether that approximation holds for this deposit.",
+    "pile unit 'Overburden' has no contact points \u2014 not modeled",
+    "pile unit 'Upper package (grey to black siltstone, fine-grained tan-grey sandstone, graphitic black shale)' has no contact points \u2014 not modeled",
+    "pile unit 'Middle package (quartz-feldspar crystal-lithic tuff, volcaniclastic sandstones, Mosquito Hill porphyry)' has no contact points \u2014 not modeled",
+    "pile unit 'Lower package (chaotic ophiolitic m\u00e9lange with graphitic black shale matrix, serpentinized ultramafic rocks, polymictic conglomerate, sericite-carbonate-altered quartz-feldspar porphyry)' has no contact points \u2014 not modeled",
+    "pile unit 'Coy Pond Complex (harzburgite tectonite, serpentinite, pyroxenite, wehrlite, gabbro, diabase, pillow lavas, trondhjemite)' has no contact points \u2014 not modeled",
+    "units not in stratigraphic pile, order inferred from mean contact elevation (youngest first): Mosquito Hill Zone (Porphyry) (top), Mosquito Hill Zone (Porphyry) (base)",
+    "orientation for 'Mineralized porphyry / m\u00e9lange contact (Mosquito Hill)' matches no modeled surface \u2014 skipped",
+    "orientation for 'Mineralized wireframe fold limbs (Mosquito Hill)' matches no modeled surface \u2014 skipped",
+    "orientation for 'Mineralized wireframe fold limbs (Mosquito Hill)' matches no modeled surface \u2014 skipped",
+    "orientation for 'Reid porphyry host sequence (Reid Deposit)' matches no modeled surface \u2014 skipped",
+    "series 'Strat_Series': no extracted orientation \u2014 plane-fit on 'Mosquito Hill Zone (Porphyry) (top)' gives dip 24.5\u00b0 toward 151\u00b0",
+    "2 fault(s) recorded in the extraction are NOT modeled (fault surface construction is out of POC scope): Red Indian Line (Mekwe'jit Line), Block faults / thrust imbrication (Reid Deposit)"
+  ],
+  "counts": {
+    "surface_points": 34,
+    "orientations": 1,
+    "holes": 122
+  }
+}

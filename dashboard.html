@@ -588,6 +588,29 @@ table.pf-table td,.pf-table th{padding:8px 10px}
   margin-left:auto;font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px;
   background:var(--accent);color:#fff;
 }
+
+/* ── 3D Models page ──────────────────────────────────────────────── */
+#page-models.active{display:flex;flex-direction:column;gap:14px}
+.models-tabs{display:flex;gap:8px;flex-wrap:wrap}
+.model-tab{
+  padding:7px 16px;border-radius:8px;font-size:13px;font-weight:500;
+  border:1px solid var(--border);background:var(--surface);color:var(--text2);
+  cursor:pointer;transition:all .12s;font-family:inherit;
+}
+.model-tab:hover{border-color:var(--accent);color:var(--accent)}
+.model-tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.model-frame-wrap{
+  flex:1;position:relative;border-radius:12px;overflow:hidden;
+  border:1px solid var(--border);background:var(--surface2);
+}
+.model-frame-wrap iframe{
+  display:block;width:100%;height:72vh;min-height:540px;border:none;
+}
+.model-frame-loading{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  background:var(--surface2);font-size:13px;color:var(--muted);pointer-events:none;
+  z-index:2;
+}
 </style>
 </head>
 <body>
@@ -652,6 +675,10 @@ table.pf-table td,.pf-table th{padding:8px 10px}
   <a class="nav-item" onclick="navTo('map',this)">
     <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg></span>
     Map
+  </a>
+  <a class="nav-item" onclick="navTo('models',this)">
+    <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
+    3D Models
   </a>
   <a class="nav-item" onclick="navTo('chat',this)">
     <span class="nav-icon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
@@ -846,6 +873,16 @@ table.pf-table td,.pf-table th{padding:8px 10px}
       <div class="map-legend" id="mapLegend"></div>
     </div>
 
+    <!-- ── 3D Models ─────────────────────────────── -->
+    <div id="page-models" class="page">
+      <div class="models-tabs" id="modelsTabs"></div>
+      <div class="model-frame-wrap" id="modelFrameWrap">
+        <div class="model-frame-loading" id="modelFrameLoading">Select a model above to view</div>
+        <iframe id="modelFrame" title="3D Geological Model" allowfullscreen
+          sandbox="allow-scripts allow-same-origin"></iframe>
+      </div>
+    </div>
+
     <!-- ── Chat ─────────────────────────────────── -->
     <div id="page-chat" class="page">
       <div class="chat-wrap">
@@ -935,7 +972,7 @@ const PAGE_TITLES = {
   compare:'Compare Reports',
   resources:'Resources & Reserves', economics:'Economics',
   property:'Property & Geology', exploration:'Exploration & QPs',
-  map:'Project Map', chat:'Chat'
+  map:'Project Map', models:'3D Geological Models', chat:'Chat'
 };
 function navTo(page, el) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -944,7 +981,7 @@ function navTo(page, el) {
   const pg = document.getElementById('page-' + page);
   if (pg) pg.classList.add('active');
   document.getElementById('pageTitle').textContent = PAGE_TITLES[page] || 'ORExtractor';
-  const hideSelect = page === 'chat' || page === 'portfolio' || page === 'map' || page === 'compare';
+  const hideSelect = page === 'chat' || page === 'portfolio' || page === 'map' || page === 'compare' || page === 'models';
   $('reportSelect').style.display = hideSelect ? 'none' : '';
   $('extractAllBtn').style.display = hideSelect ? 'none' : '';
   $('extractSelBtn').style.display  = (page === 'overview' && current) ? '' : 'none';
@@ -952,6 +989,7 @@ function navTo(page, el) {
   if (page === 'home')      renderHome();
   if (page === 'portfolio') renderPortfolio();
   if (page === 'map')       renderMap();
+  if (page === 'models')    renderModels();
   if (page === 'compare')   renderCompare();
   if (page === 'chat') {
     const cf = $('chatFilter');
@@ -2258,6 +2296,61 @@ async function sendChat() {
     $('chatSendBtn').disabled = false;
     input.focus();
   }
+}
+
+// ── 3D Models ─────────────────────────────────────────────────────────────
+let _spatialModels = null;  // populated from /api/spatial-models
+let _activeModelId = null;
+
+function renderModels() {
+  const tabs = $('modelsTabs');
+  if (!tabs) return;
+  if (_spatialModels !== null) { _renderModelTabs(); return; }
+  fetch('/api/spatial-models')
+    .then(r => r.json())
+    .then(d => { _spatialModels = d.models || []; _renderModelTabs(); })
+    .catch(() => { _spatialModels = []; _renderModelTabs(); });
+}
+
+function _renderModelTabs() {
+  const tabs = $('modelsTabs');
+  if (!tabs) return;
+  if (!_spatialModels.length) {
+    tabs.innerHTML = '<span style="opacity:.5;font-size:13px">No 3D models found in spatial_data/</span>';
+    return;
+  }
+  tabs.innerHTML = _spatialModels.map(m =>
+    `<button class="model-tab${_activeModelId === m.id ? ' active' : ''}" data-model-id="${m.id}" onclick="loadModel('${m.id}')">${esc(m.label)}</button>`
+  ).join('');
+  if (!_activeModelId) loadModel(_spatialModels[0].id);
+}
+
+function loadModel(id) {
+  if (!_spatialModels) return;
+  const model = _spatialModels.find(m => m.id === id);
+  if (!model) return;
+  _activeModelId = id;
+  document.querySelectorAll('.model-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.modelId === id));
+  const frame   = $('modelFrame');
+  const loading = $('modelFrameLoading');
+  if (!frame) return;
+  loading.style.display   = 'flex';
+  loading.textContent     = 'Loading model…';
+  frame.style.visibility  = 'hidden';
+  // HEAD-check before loading — iframe.onerror does not fire for HTTP 4xx responses
+  fetch(model.file, { method: 'HEAD' })
+    .then(r => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      frame.onload = () => {
+        loading.style.display  = 'none';
+        frame.style.visibility = 'visible';
+      };
+      frame.src = model.file;
+    })
+    .catch(err => {
+      loading.textContent = `Could not load model — ${err.message}. Ensure spatial_data/ is served by the API.`;
+    });
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────

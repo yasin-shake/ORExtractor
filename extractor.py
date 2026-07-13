@@ -1,6 +1,6 @@
 """Structured extraction of NI 43-101 data from ingested reports.
 
-Extraction runs as four focused passes, each targeting a distinct subset of the
+Extraction runs as five focused passes, each targeting a distinct subset of the
 schema with a proportionally smaller context window:
 
 1. **Identity** (executive summary, front matter, property) → report metadata,
@@ -11,11 +11,14 @@ schema with a proportionally smaller context window:
    CapEx, mining method, processing method.
 4. **Geology & Environment** (geology, exploration, environmental topics) →
    deposit type, drilling stats, permitting, indigenous consultation, risk flags.
+5. **Portfolio Metadata** (project stage, deposit type, primary mining method,
+   commodity tags, political risk) → scalar tag fields used for peer matching
+   and portfolio screening.
 
 Each pass uses ``with_structured_output`` bound to the full ``NI43101Report``
-schema but is instructed to populate only its designated fields; the four partial
+schema but is instructed to populate only its designated fields; the five partial
 results are merged field-by-field (first non-empty value wins) into the final
-report object.  Splitting the context reduces per-call token usage by ~75 %,
+report object.  Splitting the context reduces per-call token usage by ~80 %,
 avoids monolithic-context degradation, and means a single-pass rate-limit retry
 does not block the entire extraction.
 """
@@ -47,6 +50,7 @@ def _invoke_with_backoff(structured_llm, messages, max_retries: int = 6):
         except Exception as exc:
             msg = str(exc).lower()
             is_rate_limit = "rate_limit" in msg or "429" in msg or "rate limit" in msg
+            is_timeout = "read timeout" in msg or "timed out" in msg
             if is_rate_limit and attempt < max_retries - 1:
                 wait = delay * (2 ** attempt)  # 60 → 120 → 240 → …
                 print(
@@ -55,6 +59,14 @@ def _invoke_with_backoff(structured_llm, messages, max_retries: int = 6):
                     flush=True,
                 )
                 time.sleep(wait)
+            elif is_timeout and attempt < max_retries - 1:
+                # Transient network stall, not throttling — retry quickly.
+                print(
+                    f"  Read timeout — retrying in 15s "
+                    f"({attempt + 1}/{max_retries - 1}) …",
+                    flush=True,
+                )
+                time.sleep(15)
             else:
                 raise
 
@@ -488,3 +500,237 @@ def list_extractions(settings: Settings) -> List[dict]:
         except (json.JSONDecodeError, OSError):
             continue
     return out
+
+
+# ---------------------------------------------------------------------------
+# Spatial / geological-model extraction (SpatialExtraction, spatial_data/)
+# ---------------------------------------------------------------------------
+# Guarded import: spatial_schemas.py is optional. The standard NI43101
+# extraction pipeline works fine without it; only extract_spatial() will
+# fail (with a clear ImportError) if the file is absent.
+try:
+    from spatial_schemas import SpatialExtraction
+except ImportError:
+    SpatialExtraction = None  # type: ignore[assignment,misc]
+# Separate from the 5-pass NI43101Report pipeline: the output is its own
+# top-level object with per-record source provenance and a human review gate.
+#
+# Retrieval deliberately does NOT scope the drilling queries to NI Items:
+# collar/survey/lithology tables usually live in unnumbered appendices, which
+# chapter_index tags as ni_item=27 (the last detected chapter's page range is
+# open-ended) — an Item-scoped query would be blind to them. Instead each
+# query runs twice — once restricted to table chunks (type="table"), once
+# unrestricted — and the results are deduplicated.
+
+_SPATIAL_INSTRUCTION = (
+    "You are a meticulous mining geologist extracting SPATIAL / GEOLOGICAL-MODEL data "
+    "from an NI 43-101 technical report, for 3D geological model reconstruction. Use "
+    "ONLY the provided context excerpts. Rules:\n"
+    "1. Never invent or estimate values. A field absent from the context is null (or an "
+    "empty list). A wrong-but-plausible coordinate is worse than a missing one.\n"
+    "2. Every record MUST have a `source` citing where it came from — table number and "
+    "page where visible (e.g. 'Table 10-1, page 87').\n"
+    "3. Collar tables: one Borehole per data row. Record x, y, z_collar, azimuth, dip and "
+    "total_depth_m exactly as printed — strip thousands separators, do not flip dip "
+    "signs, do not convert between grids.\n"
+    "4. Downhole surveys: attach SurveyPoint rows to the matching hole_id. If no survey "
+    "data exists for a hole, leave survey_points empty — never assume values.\n"
+    "5. Lithology logs: one LithologyInterval per logged interval row. If the report has "
+    "no lithology log tables (common — logs stay in company databases), capture mineralized "
+    "intercept tables (hole, from, to, zone/unit) as LithologyInterval rows instead: use the "
+    "zone/unit/rock name as unit_name and cite the intercept table in source. Capture EVERY "
+    "row present in the context, including continuation pages of the same table. When the "
+    "deposit/zone a table belongs to is stated (table title or nearby text), qualify "
+    "unit_name with it — e.g. 'Porphyry (Mosquito Hill)'. When the zone is NOT "
+    "identifiable, still capture every row with the plain unit name — never skip a row "
+    "because its zone is unclear.\n"
+    "6. Stratigraphic pile: order_top_down 1 = youngest / structurally topmost. Only "
+    "assign an ordering the report states or clearly implies (e.g. a stratigraphic "
+    "column or 'X overlies Y' statements).\n"
+    "7. Orientations: extract dip and dip_direction only where explicitly stated. If "
+    "only strike is given, apply the right-hand rule (dip direction = strike + 90 "
+    "degrees) ONLY when the dip side is unambiguous, and quote the original strike "
+    "text in `source`.\n"
+    "8. coordinate_system: record the grid exactly as stated (UTM zone and datum, or "
+    "'local mine grid'). If different tables use different grids, say so in `notes`.\n"
+    "9. If a table has more rows than you can output, extract the first 200 rows and "
+    "state in `notes` how many rows were omitted and from which table.\n"
+    "10. Never set `confirmed` and never populate cross_section_points — both belong to "
+    "the human review / digitizing workflow, not to extraction."
+)
+
+_SPATIAL_PASSES: List[dict] = [
+    {
+        "name": "drilling",
+        "queries": [
+            "drill hole collar coordinates easting northing elevation azimuth dip depth table",
+            "collar location table UTM coordinates drill hole",
+            "downhole survey deviation azimuth dip measured depth",
+            "lithology log drill hole interval from to rock unit",
+            "significant intercepts drill hole from to interval width grade zone table",
+        ],
+        "filter_types": ["table"],
+        "filter_items": None,
+        "focus": (
+            "Extract ONLY: coordinate_system, boreholes (with survey_points where a "
+            "downhole survey table exists), and lithology_intervals. "
+            "Leave stratigraphic_pile, orientations, and faults empty."
+        ),
+    },
+    {
+        "name": "structure",
+        "queries": [
+            "stratigraphy stratigraphic column formation member sequence youngest oldest overlies",
+            "structural geology bedding foliation dip strike dip direction measurements",
+            "fault shear zone displacement offset orientation",
+        ],
+        "filter_types": None,
+        "filter_items": [7, 8],
+        "focus": (
+            "Extract ONLY: coordinate_system, stratigraphic_pile (in age order), "
+            "orientations, and faults. Leave boreholes and lithology_intervals empty."
+        ),
+    },
+]
+
+_SPATIAL_MAX_CONTEXT_CHARS = 100_000
+
+
+def _gather_spatial_context(
+    settings: Settings,
+    vectorstore: Chroma,
+    filename: str,
+    pass_def: dict,
+) -> str:
+    """Retrieve context for one spatial pass.
+
+    Each query runs a filtered variant (table-only or Item-scoped, per the pass)
+    plus an unrestricted variant, deduplicated by (source, page, chunk) — the
+    filter buys precision, the unrestricted run catches content the filter would
+    miss (collar data in prose, structure data in appendices tagged Item 27).
+    """
+    per_query_k = settings.extract_top_k
+    seen: set = set()
+    blocks: List[str] = []
+
+    for q in pass_def["queries"]:
+        variants: List[dict] = []
+        if pass_def.get("filter_types"):
+            variants.append({"filter_types": pass_def["filter_types"]})
+        if pass_def.get("filter_items"):
+            variants.append({"filter_items": pass_def["filter_items"]})
+        variants.append({})
+
+        query_parts: List[str] = []
+        for kwargs in variants:
+            parts, metadatas = query_chunks(
+                vectorstore, q, per_query_k, filter_sources=[filename], **kwargs
+            )
+            for part, meta in zip(parts, metadatas):
+                key = (meta.get("source"), meta.get("page"), meta.get("chunk"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                query_parts.append(part)
+        if query_parts:
+            blocks.append(f"### Context for: {q}\n" + "\n\n".join(query_parts))
+
+    context = "\n\n".join(blocks)
+    if len(context) > _SPATIAL_MAX_CONTEXT_CHARS:
+        tqdm.write(
+            f"  Spatial pass '{pass_def['name']}': context truncated "
+            f"{len(context)} -> {_SPATIAL_MAX_CONTEXT_CHARS} chars"
+        )
+        context = context[:_SPATIAL_MAX_CONTEXT_CHARS] + "\n… [context truncated]"
+    return context
+
+
+def _merge_spatial(source_file: str, *partials: SpatialExtraction) -> SpatialExtraction:
+    """Merge spatial pass results: lists concatenate, scalars first-non-empty.
+
+    Unlike _merge_partials, lists are concatenated rather than first-wins —
+    both passes may legitimately contribute to the same list (e.g. orientations
+    mentioned alongside a collar table). `confirmed` always resets to False:
+    a fresh extraction invalidates any prior human review.
+    """
+    merged: dict = {"source_file": source_file, "confirmed": False}
+    notes: List[str] = []
+    for partial in partials:
+        for field_name in SpatialExtraction.model_fields:
+            if field_name in ("source_file", "confirmed"):
+                continue
+            val = getattr(partial, field_name, None)
+            if val is None or (isinstance(val, list) and not val):
+                continue
+            if field_name == "notes":
+                if val not in notes:
+                    notes.append(val)
+            elif isinstance(val, list):
+                merged[field_name] = merged.get(field_name, []) + val
+            elif field_name not in merged:
+                merged[field_name] = val
+    if notes:
+        merged["notes"] = " | ".join(notes)
+    return SpatialExtraction(**merged)
+
+
+def extract_spatial(
+    settings: Settings,
+    vectorstore: Chroma,
+    llm: ChatBedrockConverse,
+    filename: str,
+) -> SpatialExtraction:
+    """Extract spatial/geological-model data via two focused passes.
+
+    Pass the LLM in with a raised max_tokens (see get_chat_model): a collar
+    table with hundreds of holes cannot fit its structured output in the
+    4096-token chat default.
+    """
+    structured_llm = llm.with_structured_output(SpatialExtraction)
+    partials: List[SpatialExtraction] = []
+
+    for pass_def in _SPATIAL_PASSES:
+        context = _gather_spatial_context(settings, vectorstore, filename, pass_def)
+        if not context.strip():
+            continue
+        messages = [
+            SystemMessage(content=_SPATIAL_INSTRUCTION),
+            HumanMessage(
+                content=(
+                    f"FOCUS FOR THIS PASS: {pass_def['focus']}\n\n"
+                    "Extract spatial geological-model data from the context below. "
+                    f"Set source_file to '{filename}'.\n\n"
+                    f"{json.dumps({'source_file': filename, 'context': context}, ensure_ascii=True, indent=2)}"
+                )
+            ),
+        ]
+        partial = _invoke_with_backoff(structured_llm, messages)
+        partials.append(partial)
+
+    if not partials:
+        return SpatialExtraction(source_file=filename)
+
+    return _merge_spatial(filename, *partials)
+
+
+def save_spatial_extraction(settings: Settings, extraction: SpatialExtraction) -> Path:
+    """Persist a SpatialExtraction to spatial_data/{stem}.json.
+
+    Overwrites unconditionally — including any `confirmed` flag or digitized
+    cross_section_points in the old file. Callers that must not clobber
+    reviewed data should check for the file first (run_extract skips existing).
+    """
+    settings.spatial_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(extraction.source_file).stem if extraction.source_file else "report"
+    out_path = settings.spatial_dir / f"{stem}.json"
+    out_path.write_text(extraction.model_dump_json(indent=2), encoding="utf-8")
+    return out_path
+
+
+def load_spatial_extraction(settings: Settings, filename: str) -> Optional[dict]:
+    """Load a previously saved spatial extraction JSON by source filename."""
+    stem = Path(filename).stem
+    path = settings.spatial_dir / f"{stem}.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))

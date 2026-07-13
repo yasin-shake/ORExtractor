@@ -154,6 +154,21 @@ class ExtractRequest(BaseModel):
     filename: str
 
 
+@app.get("/api/spatial-models", summary="List available 3D geological model files")
+def list_spatial_models():
+    """Return id/label/file metadata for every HTML model in the spatial_data directory."""
+    import re as _re
+    models = []
+    spatial_dir = _settings.spatial_dir
+    if spatial_dir.exists():
+        for p in sorted(spatial_dir.glob("*.html")):
+            stem = p.stem
+            label = _re.sub(r"[-_]+", " ", stem).strip()
+            model_id = _re.sub(r"[^a-z0-9]+", "_", stem.lower()).strip("_")
+            models.append({"id": model_id, "label": label, "file": f"spatial_data/{p.name}"})
+    return {"models": models}
+
+
 @app.get("/api/reports", summary="List structured report extractions")
 def list_reports():
     """Return all saved structured extractions from the extracted_data directory."""
