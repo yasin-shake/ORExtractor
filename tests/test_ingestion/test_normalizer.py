@@ -1,3 +1,5 @@
+import base64
+
 from ingestion.normalizer import normalize_category, stable_element_id, normalize_elements
 
 
@@ -38,3 +40,19 @@ def test_normalize_elements_persists_table_html(tmp_path):
     assert (tmp_path / "tables").exists()
     html_files = list((tmp_path / "tables").glob("*.html"))
     assert len(html_files) == 1
+
+
+def test_duplicate_images_are_detected_by_content(tmp_path):
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+    )
+    encoded = base64.b64encode(png).decode("ascii")
+    elements = [
+        _FakeEl("Image", image_base64=encoded, page_number=1),
+        _FakeEl("Image", image_base64=encoded, page_number=2),
+    ]
+    records = normalize_elements(elements, "report.pdf", tmp_path)
+    assert records[0].is_duplicate is False
+    assert records[1].is_duplicate is True
+    assert records[1].skip_reason == "duplicate_image"

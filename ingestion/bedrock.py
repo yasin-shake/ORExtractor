@@ -25,8 +25,14 @@ def get_visual_model(settings, max_tokens: int | None = None) -> ChatBedrockConv
 
 
 def get_visual_analysis_model(settings) -> ChatBedrockConverse:
-    return get_visual_model(settings).with_structured_output(VisualAnalysis)
+    return get_visual_model(settings).with_structured_output(
+        VisualAnalysis,
+        include_raw=True,
+    )
 
 
 def get_table_validation_model(settings) -> ChatBedrockConverse:
-    return get_visual_model(settings).with_structured_output(TableValidation)
+    return get_visual_model(settings).with_structured_output(
+        TableValidation,
+        include_raw=True,
+    )

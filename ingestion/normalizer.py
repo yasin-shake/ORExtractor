@@ -49,8 +49,11 @@ def _element_attr(el: Any, name: str, default: Any = None) -> Any:
     if hasattr(el, name):
         return getattr(el, name)
     if isinstance(el, dict):
-        return el.get(name, default)
-    meta = getattr(el, "metadata", None)
+        if name in el:
+            return el.get(name, default)
+        meta = el.get("metadata")
+    else:
+        meta = getattr(el, "metadata", None)
     if meta is not None and hasattr(meta, name):
         return getattr(meta, name)
     if isinstance(meta, dict):
@@ -60,10 +63,6 @@ def _element_attr(el: Any, name: str, default: Any = None) -> Any:
 
 def _page_number(el: Any) -> int:
     page = _element_attr(el, "page_number", None)
-    if page is None:
-        meta = getattr(el, "metadata", None)
-        if meta is not None:
-            page = getattr(meta, "page_number", None) if not isinstance(meta, dict) else meta.get("page_number")
     try:
         return int(page) if page is not None else 1
     except (TypeError, ValueError):
@@ -71,7 +70,7 @@ def _page_number(el: Any) -> int:
 
 
 def _coordinates(el: Any) -> Optional[dict]:
-    meta = getattr(el, "metadata", None)
+    meta = el.get("metadata") if isinstance(el, dict) else getattr(el, "metadata", None)
     coords = None
     if meta is not None:
         coords = getattr(meta, "coordinates", None) if not isinstance(meta, dict) else meta.get("coordinates")
@@ -91,7 +90,7 @@ def _coordinates(el: Any) -> Optional[dict]:
 
 
 def _text_as_html(el: Any) -> str:
-    meta = getattr(el, "metadata", None)
+    meta = el.get("metadata") if isinstance(el, dict) else getattr(el, "metadata", None)
     if meta is None:
         return ""
     if isinstance(meta, dict):
@@ -100,7 +99,7 @@ def _text_as_html(el: Any) -> str:
 
 
 def _extract_image_bytes(el: Any) -> Optional[bytes]:
-    meta = getattr(el, "metadata", None)
+    meta = el.get("metadata") if isinstance(el, dict) else getattr(el, "metadata", None)
     if meta is None:
         return None
     payload = None
@@ -134,7 +133,15 @@ def _image_size(data: bytes) -> tuple[Optional[int], Optional[int]]:
 
 def _persist_image(data: bytes, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(data)
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(data)) as image:
+            image.convert("RGB").save(dest, format="PNG")
+    except Exception:
+        dest.write_bytes(data)
     return dest
 
 
@@ -156,6 +163,7 @@ def normalize_elements(
 
     records: List[ElementRecord] = []
     seen_text_fps: dict[str, int] = {}
+    seen_image_hashes: set[str] = set()
     category_counters: dict[str, int] = {}
 
     for el in raw_elements:
@@ -178,9 +186,11 @@ def normalize_elements(
         image_path = None
         width = height = None
         image_bytes = _extract_image_bytes(el)
+        image_hash = hashlib.sha256(image_bytes).hexdigest() if image_bytes else ""
         if image_bytes:
             width, height = _image_size(image_bytes)
-            image_path = str(_persist_image(image_bytes, figures_dir / f"{element_id}.png"))
+            image_dir = tables_dir if category == "Table" else figures_dir
+            image_path = str(_persist_image(image_bytes, image_dir / f"{element_id}.png"))
 
         if category == "Table" and html:
             html_path = tables_dir / f"{element_id}.html"
@@ -195,8 +205,13 @@ def normalize_elements(
         if fp and category in {"Header", "Footer", "Image"} and fp in seen_text_fps:
             is_duplicate = True
             skip_reason = "duplicate_header_footer_or_logo"
+        if category == "Image" and image_hash and image_hash in seen_image_hashes:
+            is_duplicate = True
+            skip_reason = "duplicate_image"
         if fp:
             seen_text_fps[fp] = seen_text_fps.get(fp, 0) + 1
+        if image_hash:
+            seen_image_hashes.add(image_hash)
 
         if category in {"Header", "Footer"}:
             skip_reason = skip_reason or "decorative"

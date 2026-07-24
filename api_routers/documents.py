@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from api_routers._deps import run_ingest, settings_or_503
+from api_routers._deps import run_ingest, safe_pdf_name, settings_or_503
 from rag_app import iter_pdf_paths
 
 router = APIRouter(tags=["documents"])
@@ -27,7 +27,8 @@ def delete_document(filename: str):
     from api_routers._deps import IngestBusyError
 
     settings = settings_or_503()
-    path = settings.knowledge_dir / filename
+    safe_name = safe_pdf_name(filename)
+    path = settings.knowledge_dir / safe_name
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Document not found: {filename!r}")
     path.unlink()
@@ -35,4 +36,4 @@ def delete_document(filename: str):
         run_ingest(rebuild=True)
     except IngestBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"status": "deleted", "file": filename}
+    return {"status": "deleted", "file": safe_name}

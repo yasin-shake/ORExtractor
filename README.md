@@ -8,7 +8,7 @@ Built for the full spectrum of NI 43-101 users — investors and fund managers c
 
 ## Capabilities
 
-- **VLM-powered PDF ingestion** — parses NI 43-101 PDFs page-by-page via [olmocr](https://github.com/allenai/olmocr) (`allenai/olmOCR-7B-0225-preview`); HTML tables embedded in the model output are converted to pipe-delimited markdown; figure/diagram pages are indexed if they contain extractable text. Falls back to PyMuPDF text-layer extraction when no inference server is configured (`OLMOCR_SERVER_URL` unset). Every chunk is tagged with its NI Item number and section title, embedded with OpenAI, and stored in a persistent Chroma vector index with configurable overlap (`RAG_CHUNK_OVERLAP`). Unchanged files are skipped on re-ingest via a content-fingerprint manifest.
+- **Layout-aware PDF ingestion** — partitions text, titles, lists, tables, figures, captions, coordinates, and hierarchy with local or hosted Unstructured. Selected visuals and important/suspicious tables are enriched by Claude Haiku through AWS Bedrock using validated Pydantic output. Original crops remain authoritative; only validated charts and process diagrams are reconstructed. The legacy olmOCR path remains available during benchmark migration.
 - **Structured extraction** — a 5-pass Claude (Bedrock) pipeline turns each report into a typed `NI43101Report` JSON object (identity, resources/reserves, economics/technical, geology/exploration/environmental, and portfolio metadata tags), never fabricating values for sections that aren't in the report. Each pass fans out its NI Item/topic queries concurrently for speed.
 - **Agentic due-diligence chat** — a LangGraph ReAct agent with 6 tools (question routing, Item-scoped retrieval, extraction lookup, peer discovery, cross-report benchmarking, DD playbooks) that cites NI Item + page numbers, raises red flags from a due-diligence playbook, and issues a Go / Conditional Go / Further Work / No-Go assessment.
 - **Portfolio screener dashboard** — a single-page HTML/JS app (no build step) with a KPI home page, sortable/filterable portfolio table, side-by-side report comparison (up to 4 reports), a Leaflet world map of every geolocated project, per-report resource/economics/geology/exploration views, and an embedded 3D geological model viewer (`spatial_data/` HTML models).
@@ -20,10 +20,11 @@ Built for the full spectrum of NI 43-101 users — investors and fund managers c
 
 ```
 PDF files (knowledge/ + extra dirs)
-  → olmocr VLM inference per page (natural_text + HTML tables; PyMuPDF fallback when no GPU server)
-  → chunk (paragraph-aware) + tag each chunk with its NI Item # and section title (chapter_index.py)
+  → Unstructured local/API partition → canonical text/table/figure elements + retained artifacts
+  → selective Claude Haiku enrichment → deterministic validation/reconstruction
+  → section-aware chunk + NI Item/section tagging (chapter_index.py consistency pass)
   → embed (OpenAI text-embedding-3-small) → store (Chroma persistent vector DB)
-  → change-detection manifest skips unchanged PDFs on re-ingest
+  → versioned partition/enrichment caches + manifest skip unchanged work
 
 Agentic chat  → LangGraph ReAct agent (6 tools: route_question, get_routing_playbook,
                 search_by_items, get_extraction, find_peer_reports, benchmark_field)
@@ -41,8 +42,8 @@ Dashboard     → REST API → interactive HTML (KPI home · portfolio screener 
 
 - Python 3.10+
 - **OpenAI API key** — required for `ingest` only (embeddings, `text-embedding-3-small`). The `extract`, `chat`, and `reindex-chapters` commands do not contact OpenAI and can run without a valid key.
-- **AWS credentials** with Bedrock access — used for generation (chat) and structured extraction (Claude Sonnet 4 via a Bedrock cross-region inference profile, by default)
-- **olmocr inference server** — ingestion calls an OpenAI-compatible endpoint running `allenai/olmOCR-7B-0225-preview` (set `OLMOCR_SERVER_URL`). If unset, ingestion falls back to PyMuPDF's text layer (fast, good for digital PDFs; skips scanned pages). A GPU with ≥15 GB VRAM (e.g. RTX 5070 Ti) is sufficient for local serving via `vllm`.
+- **AWS credentials** with Bedrock access — used for selective visual enrichment (Claude Haiku), chat, and structured extraction. Credentials are read through the normal AWS credential chain.
+- **Unstructured** — installed by `requirements.txt` for local partitioning. Set `UNSTRUCTURED_PROVIDER=api` plus the API URL/key to use a hosted or self-hosted Partition API instead. No GPU or vLLM server is required.
 
 ## Setup
 
@@ -74,19 +75,20 @@ Drop NI 43-101 PDF files into `knowledge/`. Multiple directories are supported v
 python rag_app.py ingest
 ```
 
-Each PDF is processed page-by-page through the olmocr pipeline:
+Set `INGESTION_BACKEND=unstructured` to use the layout-aware pipeline. Unstructured output is normalized into stable text, table, figure, caption, formula, and page-break records. Source table/figure artifacts are retained, section and NI Item context is attached, and the result is converted to standard LangChain `Document` records.
 
-- **VLM inference** — each page image is sent to an `allenai/olmOCR-7B-0225-preview` inference server (`OLMOCR_SERVER_URL`). Pages are dispatched concurrently (`OLMOCR_WORKERS`, default 4). The model returns per-page YAML containing `natural_text`, `is_table`, and `is_diagram` flags.
-- **Text chunks** — `natural_text` is split with configurable size (`RAG_CHUNK_SIZE`, default 1400 chars) and overlap (`RAG_CHUNK_OVERLAP`, default 150 chars).
-- **Table chunks** — HTML `<table>` blocks embedded in the olmocr output are extracted, converted to pipe-delimited markdown, and stored as separate table-type chunks so the LLM reads columns directly.
-- **Fallback** — if `OLMOCR_SERVER_URL` is unset, `PyMuPDF`'s text layer is used instead (instant; works well for digital PDFs with a text layer).
+Claude Haiku is called only for routed figures and important or suspicious tables. A failed visual call is recorded per element and does not stop normal text ingestion. Reconstruction is deterministic through Plotly or Graphviz, never executes model-generated code, and rejects geological maps, cross-sections, mine plans, block models, and similar technical geometry.
 
-After chunking, `chapter_index.py` scans every chunk's full text for "Item N — …" headings to build a page-range chapter index per report, then tags each chunk's metadata with `ni_item` and `section_title`. Chunks are embedded in batches (`RAG_EMBED_BATCH_SIZE`) and upserted into Chroma with a process-level embedding cache to avoid re-embedding identical query strings. Progress is shown with tqdm bars (per-file) including ETA. PDFs unchanged since the last run (by content fingerprint) are skipped automatically.
+Partition output, normalized elements, structured model responses, final chunks, and reconstruction audit manifests are stored below `RAG_ARTIFACT_DIR`. Versioned cache keys include source, image/context, parser, model, prompt, and schema versions. Chroma records retain scalar metadata for source, page, type, NI Item, section title, element ID, and asset provenance.
 
 To wipe and rebuild the index (e.g. after changing chunk settings):
 
 ```bash
 python rag_app.py ingest --rebuild
+python rag_app.py ingest --file report.pdf --backend unstructured
+python rag_app.py ingest --partition-only --backend unstructured
+python rag_app.py ingest --reprocess-visuals --backend unstructured
+python rag_app.py inspect-elements --file report.pdf
 ```
 
 After upgrading to chapter-aware ingestion, or if heading detection needs a refresh, re-tag existing chunks with NI Item metadata without re-embedding:
@@ -293,7 +295,9 @@ Study type/date, pre- and post-tax NPV, IRR, payback, discount rate, initial/sus
 
 | File | Purpose |
 |------|---------|
-| `rag_app.py` | Settings/env loading, olmocr PDF parsing (PyMuPDF fallback) → chunking → chapter tagging, Chroma ingest/upsert, retrieval + keyword rerank, chat prompt building, CLI entry point (`ingest`, `chat`, `extract`, `reindex-chapters`) |
+| `rag_app.py` | Settings/env loading, legacy olmOCR compatibility, Chroma ingest/retrieval, chat prompt building, and CLI entry points |
+| `ingestion/` | Canonical schemas, local/API Unstructured partitioners, hierarchy/context, Bedrock enrichment, caches, deterministic visual validation/rendering, chunking, manifests, and LangSmith telemetry |
+| `api_routers/` | Document, ingestion, Chroma export/info, reports, and chat API routers |
 | `schemas.py` | Pydantic models for the structured `NI43101Report` and all nested sub-models |
 | `extractor.py` | 5-pass structured extraction pipeline, NI Item/topic-aligned context gathering, partial-result merging, rate-limit backoff, batch extraction across the portfolio |
 | `chapter_index.py` | Detects "Item N — …" headings in parsed chunks, builds a per-PDF page-range chapter index, tags chunks with `ni_item`/`section_title` metadata |
@@ -317,7 +321,9 @@ Study type/date, pre- and post-tax NPV, IRR, payback, discount rate, initial/sus
 | Vector store & embeddings | `chromadb`, `openai`, `langchain-core`, `langchain-openai`, `langchain-chroma` |
 | LLM (Claude via AWS Bedrock) | `langchain-aws`, `boto3` |
 | Agent | `langgraph` (ReAct tool-calling loop) |
-| PDF parsing | `olmocr` (VLM-based per-page inference via OpenAI-compatible server; `allenai/olmOCR-7B-0225-preview`), `PyMuPDF` (`fitz` — text-layer fallback for ingestion + source-page thumbnails in Streamlit), `pyyaml` (parse olmocr YAML responses) |
+| PDF parsing | `unstructured[pdf]` (local or API layout partitioning), `PyMuPDF` (rendering, diagnostics, and thumbnails); legacy olmOCR compatibility remains during benchmark migration |
+| Visual enrichment/reconstruction | `langchain-aws`, Claude Haiku on Bedrock, `pillow`, `tenacity`, `plotly`, `kaleido`, `graphviz` |
+| Observability | `langsmith` (content hidden by default) |
 | API server | `fastapi`, `uvicorn[standard]`, `anyio`, `python-multipart` |
 | UI | `streamlit` |
 | Utilities | `tqdm`, `python-dotenv`, `requests`, `pydantic>=2` |
@@ -329,7 +335,7 @@ Study type/date, pre- and post-tax NPV, IRR, payback, discount rate, initial/sus
 docker compose up --build
 ```
 
-The API is available at `http://localhost:8000`. The bundled `docker-compose.yml` targets a **read-only deployment**: `knowledge/` and `extracted_data/` are bind-mounted read-only (ingestion/extraction are expected to run off-server against pre-built data), while `.chroma_db/` is writable because Chroma opens its SQLite store with write access even for read-only queries. The container image does not bundle an olmocr inference server — ingestion is expected to run off-server (pointing `OLMOCR_SERVER_URL` at a local or remote GPU endpoint). The PyMuPDF fallback works inside the container for digital PDFs.
+The API is available at `http://localhost:8000`. The bundled `docker-compose.yml` targets a **read-only deployment**: `knowledge/` and `extracted_data/` are bind-mounted read-only (ingestion/extraction are expected to run off-server against pre-built data), while `.chroma_db/` is writable because Chroma opens its SQLite store with write access even for read-only queries. Unstructured ingestion does not require a local GPU or vLLM service.
 
 ## Configuration (`.env`)
 
@@ -355,6 +361,20 @@ The API is available at `http://localhost:8000`. The bundled `docker-compose.yml
 | `RAG_TOP_K` | `8` | Chunks retrieved per non-agentic chat query |
 | `RAG_EXTRACTED_DIR` | `extracted_data` | Where structured extractions (and chapter indexes) are saved |
 | `NI43101_EXTRACT_TOP_K` | `12` | Chunks per topic/Item query fed to the extractor — lower to `6` if hitting rate limits |
+| `INGESTION_BACKEND` | `olmocr` | `unstructured` for the new pipeline; `olmocr` remains a temporary benchmark-compatibility option |
+| `UNSTRUCTURED_PROVIDER` | `local` | `local` or `api` |
+| `UNSTRUCTURED_STRATEGY` | `hi_res` | Unstructured PDF strategy |
+| `UNSTRUCTURED_API_URL` | _(unset)_ | Optional hosted/self-hosted legacy Partition endpoint |
+| `UNSTRUCTURED_API_KEY` | _(unset)_ | Unstructured API key |
+| `RAG_ARTIFACT_DIR` | `ingestion_artifacts` | Retained source crops, raw/normalized partition output, enrichments, chunks, and audit manifests |
+| `BEDROCK_VISUAL_MODEL_ID` | Claude 3.5 Haiku inference profile | Separate Bedrock model/inference profile for visual ingestion |
+| `BEDROCK_VISUAL_MAX_TOKENS` | `3500` | Maximum output tokens per visual/table call |
+| `BEDROCK_VISUAL_CONCURRENCY` | `6` | Maximum concurrent visual/table calls |
+| `BEDROCK_VISUAL_CONFIDENCE_THRESHOLD` | `0.85` | Minimum confidence for reconstruction |
+| `VISUAL_MAX_CALLS_PER_REPORT` | `100` | Per-report visual/table call limit |
+| `VISUAL_TOKEN_BUDGET_PER_REPORT` | `350000` | Conservative per-report visual token budget |
+| `LANGSMITH_TRACING` | `false` | Enable ingestion traces |
+| `LANGSMITH_TRACE_CONTENT` | `false` | Include document content in traces; disabled by default |
 | `OLMOCR_SERVER_URL` | _(unset)_ | OpenAI-compatible URL of the olmocr inference server (e.g. `http://localhost:8000/v1`). Unset = PyMuPDF text-layer fallback |
 | `OLMOCR_API_KEY` | _(unset)_ | API key for the olmocr server (leave blank for local/unauthenticated endpoints) |
 | `OLMOCR_MODEL` | `allenai/olmOCR-7B-0225-preview` | Model name passed to the inference server |
@@ -373,7 +393,7 @@ pytest
 
 ## Notes
 
-- **PDF parsing** — `olmocr` (`allenai/olmOCR-7B-0225-preview`) processes each page as an image via an OpenAI-compatible inference server. The model returns YAML with `natural_text` (full page markdown) and flags like `is_table`/`is_diagram`. HTML `<table>` blocks within `natural_text` are extracted and stored as separate table-type chunks; figure/diagram pages are indexed as text if `natural_text` is non-empty. When `OLMOCR_SERVER_URL` is unset the pipeline falls back to PyMuPDF's text layer — fast and accurate for digitally-born PDFs, but skips scanned pages silently.
+- **PDF parsing** — the Unstructured backend preserves layout elements and source artifacts, then selectively uses Claude Haiku for visual understanding. The olmOCR/PyMuPDF path remains only as a migration baseline until comparative quality gates pass.
 - **NI Item tagging** — after parsing, `chapter_index.py` scans each chunk's full content for "Item N — …" headings to build a page-range chapter index per report, then tags every chunk's `ni_item` and `section_title` metadata. This powers Item-scoped retrieval in both extraction and agentic chat.
 - **Chunk overlap** — `RAG_CHUNK_OVERLAP` (default 150 chars) is applied during paragraph chunking: the tail of each completed chunk is prepended to the next chunk so context around paragraph boundaries is not lost at retrieval time.
 - **Embedding cache** — `OpenAIEmbeddings` is wrapped in a process-level query cache (`_CachedOpenAIEmbeddings`) so repeated queries across extraction passes and tool calls don't make redundant API calls.

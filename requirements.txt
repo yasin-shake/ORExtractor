@@ -26,15 +26,15 @@ streamlit
 # needed on the GPU inference server, not in the application container.
 # Install separately on the GPU host:  pip install olmocr
 pyyaml              # parse olmocr YAML page responses
-PyMuPDF             # fitz — PDF page rendering and text-layer fallback
-unstructured[pdf]   # layout-aware PDF partition (INGESTION_BACKEND=unstructured)
-pillow              # image size checks and crop persistence
-tenacity            # Bedrock retry with backoff
+PyMuPDF==1.27.2.3             # tested PDF rendering/text-layer version
+unstructured[pdf]==0.24.1    # tested layout-aware partition contract
+pillow==12.2.0               # tested image sizing/crop normalization
+tenacity==9.1.4              # tested Bedrock retry behavior
 
 # ── Visual reconstruction ─────────────────────────────────────────────────────
-plotly
-kaleido             # Plotly static image export
-graphviz            # process / flowchart reconstruction
+plotly==6.6.0
+kaleido==1.3.0      # Plotly static image export
+graphviz==0.21      # process / flowchart reconstruction
 
 # ── Observability ─────────────────────────────────────────────────────────────
 langsmith

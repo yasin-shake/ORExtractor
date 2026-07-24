@@ -14,9 +14,10 @@ def configure_langsmith(settings) -> None:
         os.environ["LANGCHAIN_TRACING_V2"] = "true"
         os.environ["LANGSMITH_PROJECT"] = getattr(settings, "langsmith_project", "orextractor-ingestion")
         if not getattr(settings, "langsmith_trace_content", False):
-            # Prefer hiding inputs/outputs when supported
-            os.environ.setdefault("LANGCHAIN_HIDE_INPUTS", "true")
-            os.environ.setdefault("LANGCHAIN_HIDE_OUTPUTS", "true")
+            os.environ["LANGCHAIN_HIDE_INPUTS"] = "true"
+            os.environ["LANGCHAIN_HIDE_OUTPUTS"] = "true"
+            os.environ["LANGSMITH_HIDE_INPUTS"] = "true"
+            os.environ["LANGSMITH_HIDE_OUTPUTS"] = "true"
     else:
         os.environ.setdefault("LANGSMITH_TRACING", "false")
         os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
@@ -29,31 +30,14 @@ def stage_span(name: str, metadata: Optional[dict] = None, enabled: bool = False
         yield
         return
     try:
-        from langsmith import traceable
-
-        @traceable(name=name, metadata=metadata or {})
-        def _run():
-            return None
-
-        # Use RunTree if available for proper context manager semantics
-        try:
-            from langsmith.run_helpers import tracing_context
-            from langsmith import RunTree
-
-            rt = RunTree(name=name, run_type="chain", extra={"metadata": metadata or {}})
-            rt.post()
-            try:
-                yield
-                rt.end()
-                rt.patch()
-            except Exception as exc:
-                rt.end(error=str(exc))
-                rt.patch()
-                raise
-            return
-        except Exception:
-            _run()
-            yield
-            return
-    except Exception:
+        from langsmith import trace
+    except ImportError:
+        yield
+        return
+    with trace(
+        name,
+        run_type="chain",
+        inputs={},
+        metadata=metadata or {},
+    ):
         yield

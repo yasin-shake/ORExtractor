@@ -4,6 +4,8 @@ from pathlib import Path
 from ingestion.cache import (
     EnrichmentCache,
     build_manifest_entry,
+    load_partition_cache,
+    save_partition_cache,
     should_skip_pdf,
 )
 from ingestion.models import PIPELINE_VERSION, ElementRecord
@@ -14,6 +16,11 @@ class _Settings:
     chunk_size = 1400
     chunk_overlap = 150
     embed_model = "text-embedding-3-small"
+    unstructured_provider = "local"
+    unstructured_strategy = "hi_res"
+    bedrock_visual_confidence_threshold = 0.85
+    visual_reconstruct_charts = True
+    visual_reconstruct_diagrams = True
 
 
 def test_enrichment_cache_roundtrip(tmp_path):
@@ -60,3 +67,41 @@ def test_manifest_invalidation_on_pipeline_version(tmp_path):
     from ingestion.cache import fingerprint_legacy
 
     assert should_skip_pdf(fingerprint_legacy(pdf), pdf, settings) is True
+
+    entry3 = dict(entry)
+    entry3["partitioner"] = "unstructured-api"
+    assert should_skip_pdf(entry3, pdf, settings) is False
+
+    entry4 = dict(entry)
+    entry4["visual_enrichment_enabled"] = False
+    assert should_skip_pdf(entry4, pdf, settings) is False
+
+
+def test_partition_cache_roundtrip_and_source_invalidation(tmp_path):
+    class _Partitioner:
+        provider_name = "unstructured-local"
+        strategy = "hi_res"
+        version = "test-version"
+
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"%PDF first")
+    artifact_dir = tmp_path / "artifacts"
+    element = ElementRecord(
+        element_id="n1",
+        source_file="r.pdf",
+        category="NarrativeText",
+        text="cached",
+    )
+    save_partition_cache(
+        artifact_dir, pdf, _Settings(), _Partitioner(), [element]
+    )
+    cached = load_partition_cache(
+        artifact_dir, pdf, _Settings(), _Partitioner()
+    )
+    assert cached and cached[0].text == "cached"
+
+    pdf.write_bytes(b"%PDF changed")
+    assert (
+        load_partition_cache(artifact_dir, pdf, _Settings(), _Partitioner())
+        is None
+    )

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -13,6 +15,9 @@ from ingestion.models import (
     ChartSpecification,
     DiagramSpecification,
     ElementRecord,
+    PIPELINE_VERSION,
+    VISUAL_PROMPT_VERSION,
+    VISUAL_SCHEMA_VERSION,
     VisualAnalysis,
 )
 
@@ -38,12 +43,16 @@ def reconstruction_allowed(analysis: VisualAnalysis, settings) -> Tuple[bool, st
             pass
         if not analysis.chart or not analysis.chart.series:
             return False, "missing_chart_data"
+        if analysis.reconstruction_method not in {"plotly", ""}:
+            return False, "invalid_reconstruction_method"
         return True, "chart"
     if ftype in SUPPORTED_DIAGRAM_TYPES:
         if not getattr(settings, "visual_reconstruct_diagrams", True):
             return False, "diagrams_disabled"
         if not analysis.diagram or not analysis.diagram.nodes:
             return False, "missing_diagram_data"
+        if analysis.reconstruction_method not in {"graphviz", ""}:
+            return False, "invalid_reconstruction_method"
         return True, "diagram"
     return False, "unsupported_category"
 
@@ -53,6 +62,19 @@ def validate_chart(chart: ChartSpecification) -> List[str]:
     if not chart.series:
         warnings.append("no_series")
         return warnings
+    if (
+        chart.expected_series_count is not None
+        and chart.expected_series_count != len(chart.series)
+    ):
+        warnings.append(
+            f"series_count_mismatch:{chart.expected_series_count}!={len(chart.series)}"
+        )
+    for axis, lower, upper in (
+        ("x", chart.x_min, chart.x_max),
+        ("y", chart.y_min, chart.y_max),
+    ):
+        if lower is not None and upper is not None and lower > upper:
+            warnings.append(f"invalid_{axis}_range:{lower}>{upper}")
     for series in chart.series:
         if not series.points:
             warnings.append(f"empty_series:{series.name or '?'}")
@@ -60,14 +82,35 @@ def validate_chart(chart: ChartSpecification) -> List[str]:
         ys = [p.y for p in series.points if p.y is not None]
         if not ys:
             warnings.append(f"missing_y:{series.name or '?'}")
+            continue
+        for point in series.points:
+            if point.y is None or not math.isfinite(point.y):
+                warnings.append(f"invalid_y:{series.name or '?'}")
+                continue
+            if chart.y_min is not None and point.y < chart.y_min:
+                warnings.append(f"y_below_axis:{series.name or '?'}:{point.y}")
+            if chart.y_max is not None and point.y > chart.y_max:
+                warnings.append(f"y_above_axis:{series.name or '?'}:{point.y}")
+            if isinstance(point.x, float) and not math.isfinite(point.x):
+                warnings.append(f"invalid_x:{series.name or '?'}")
+            if isinstance(point.x, (int, float)):
+                if chart.x_min is not None and point.x < chart.x_min:
+                    warnings.append(f"x_below_axis:{series.name or '?'}:{point.x}")
+                if chart.x_max is not None and point.x > chart.x_max:
+                    warnings.append(f"x_above_axis:{series.name or '?'}:{point.x}")
+        if chart.chart_type == "pie" and any(y < 0 for y in ys):
+            warnings.append(f"negative_pie_value:{series.name or '?'}")
     return warnings
 
 
 def validate_diagram(diagram: DiagramSpecification) -> List[str]:
     warnings: List[str] = []
-    node_ids = {n.id for n in diagram.nodes}
+    ids = [node.id for node in diagram.nodes]
+    node_ids = set(ids)
     if not node_ids:
         warnings.append("no_nodes")
+    if len(ids) != len(node_ids):
+        warnings.append("duplicate_node_ids")
     for edge in diagram.edges:
         if edge.source not in node_ids or edge.target not in node_ids:
             warnings.append(f"dangling_edge:{edge.source}->{edge.target}")
@@ -171,7 +214,14 @@ def reconstruct_visuals(
             "values_estimated": analysis.values_are_estimated,
             "confidence": analysis.confidence,
             "warnings": list(analysis.warnings),
+            "visual_model_id": getattr(settings, "bedrock_visual_model_id", ""),
+            "visual_prompt_version": VISUAL_PROMPT_VERSION,
+            "visual_schema_version": VISUAL_SCHEMA_VERSION,
+            "pipeline_version": PIPELINE_VERSION,
+            "audited_at_utc": datetime.now(timezone.utc).isoformat(),
         }
+        if analysis.values_are_estimated and "values_estimated" not in info["warnings"]:
+            info["warnings"].append("values_estimated")
         if not allowed:
             results[el.element_id] = info
             continue
@@ -179,7 +229,22 @@ def reconstruct_visuals(
         if kind == "chart" and analysis.chart:
             chart_warnings = validate_chart(analysis.chart)
             info["warnings"].extend(chart_warnings)
-            if "no_series" in chart_warnings or "missing_y" in chart_warnings:
+            severe_prefixes = (
+                "no_series",
+                "series_count_mismatch:",
+                "empty_series:",
+                "missing_y:",
+                "invalid_y:",
+                "invalid_x:",
+                "invalid_x_range:",
+                "invalid_y_range:",
+                "x_below_axis:",
+                "x_above_axis:",
+                "y_below_axis:",
+                "y_above_axis:",
+                "negative_pie_value:",
+            )
+            if any(w.startswith(severe_prefixes) for w in chart_warnings):
                 info["reconstruction_allowed"] = False
                 info["reason"] = "chart_validation_failed"
                 results[el.element_id] = info
@@ -192,6 +257,10 @@ def reconstruct_visuals(
             out = recon_dir / f"{el.element_id}-chart.png"
             rendered = render_chart(analysis.chart, out)
             info["reconstructed_path"] = str(rendered) if rendered else None
+            if rendered is None:
+                info["reconstruction_allowed"] = False
+                info["reason"] = "renderer_unavailable"
+                info["warnings"].append("chart_renderer_unavailable")
             # Persist chart spec
             (recon_dir / f"{el.element_id}-chart.json").write_text(
                 analysis.chart.model_dump_json(indent=2), encoding="utf-8"
@@ -199,7 +268,12 @@ def reconstruct_visuals(
         elif kind == "diagram" and analysis.diagram:
             diag_warnings = validate_diagram(analysis.diagram)
             info["warnings"].extend(diag_warnings)
-            if "no_nodes" in diag_warnings:
+            if any(
+                warning == "no_nodes"
+                or warning == "duplicate_node_ids"
+                or warning.startswith("dangling_edge:")
+                for warning in diag_warnings
+            ):
                 info["reconstruction_allowed"] = False
                 info["reason"] = "diagram_validation_failed"
                 results[el.element_id] = info
@@ -208,6 +282,10 @@ def reconstruct_visuals(
             out = recon_dir / f"{el.element_id}-diagram.png"
             rendered = render_diagram(analysis.diagram, out)
             info["reconstructed_path"] = str(rendered) if rendered else None
+            if rendered is None:
+                info["reconstruction_allowed"] = False
+                info["reason"] = "renderer_unavailable"
+                info["warnings"].append("diagram_renderer_unavailable")
             (recon_dir / f"{el.element_id}-diagram.json").write_text(
                 analysis.diagram.model_dump_json(indent=2), encoding="utf-8"
             )

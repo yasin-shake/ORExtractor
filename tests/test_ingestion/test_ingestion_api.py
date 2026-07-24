@@ -1,5 +1,7 @@
 from api_routers._deps import safe_pdf_name, IngestBusyError, try_acquire_ingest_lock, release_ingest_lock
+from api_routers.ingestion import _ingest_payload
 from fastapi import HTTPException
+from ingestion.models import IngestionResult
 import pytest
 
 
@@ -21,3 +23,11 @@ def test_ingest_lock_busy():
             try_acquire_ingest_lock()
     finally:
         release_ingest_lock()
+
+
+def test_structured_ingest_payload_includes_metrics_and_errors():
+    result = IngestionResult(files=["r.pdf"])
+    payload = _ingest_payload([], result, "rebuilt")
+    assert payload["files"] == ["r.pdf"]
+    assert "metrics" in payload
+    assert payload["errors"] == []

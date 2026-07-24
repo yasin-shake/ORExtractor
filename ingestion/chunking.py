@@ -94,6 +94,7 @@ def elements_to_documents(
     reconstructions: Optional[Dict[str, dict]] = None,
     chunk_size: int = 1400,
     chunk_overlap: int = 150,
+    table_confidence_threshold: float = 0.85,
 ) -> List[Document]:
     analyses = analyses or {}
     validations = validations or {}
@@ -156,7 +157,12 @@ def elements_to_documents(
         if el.category == "Table":
             validation = validations.get(el.element_id)
             table_md = ""
-            if validation and validation.normalized_markdown:
+            validation_reliable = bool(
+                validation
+                and validation.is_valid
+                and validation.confidence >= table_confidence_threshold
+            )
+            if validation_reliable and validation.normalized_markdown:
                 table_md = validation.normalized_markdown
             elif el.text_as_html:
                 table_md = _html_table_to_markdown(el.text_as_html) or el.text
@@ -173,6 +179,9 @@ def elements_to_documents(
             content += (table_md or "").strip()
             if desc:
                 content += f"\n\nTable context:\n{desc}"
+            if validation and (validation.issues or validation.warnings):
+                warnings = list(validation.issues) + list(validation.warnings)
+                content += f"\n\nValidation warnings: {'; '.join(warnings)}"
             docs.append(
                 Document(
                     page_content=content,
@@ -181,6 +190,7 @@ def elements_to_documents(
                         table_counter,
                         "table",
                         confidence=validation.confidence if validation else None,
+                        table_valid=validation.is_valid if validation else None,
                     ),
                 )
             )
@@ -198,10 +208,22 @@ def elements_to_documents(
 
             doc_type = "figure"
             extracted_values = ""
-            if analysis and analysis.chart and analysis.chart.series:
+            if (
+                analysis
+                and analysis.chart
+                and analysis.chart.series
+                and recon.get("reconstruction_allowed")
+                and recon.get("reason") == "chart"
+            ):
                 doc_type = "chart_data"
                 extracted_values = analysis.chart.model_dump_json()
-            elif analysis and analysis.diagram and analysis.diagram.nodes:
+            elif (
+                analysis
+                and analysis.diagram
+                and analysis.diagram.nodes
+                and recon.get("reconstruction_allowed")
+                and recon.get("reason") == "diagram"
+            ):
                 doc_type = "diagram"
                 extracted_values = analysis.diagram.model_dump_json()
 
@@ -213,6 +235,16 @@ def elements_to_documents(
                 f"Figure type: {figure_type}\nCaption: {caption}",
             )
             content += f"Description:\n{description}"
+            if not analysis:
+                surrounding = "\n\n".join(
+                    part
+                    for part in (el.preceding_text, el.following_text)
+                    if part
+                )
+                if surrounding:
+                    content += f"\n\nSurrounding context:\n{surrounding}"
+                if el.skip_reason:
+                    content += f"\n\nVisual enrichment status: {el.skip_reason}"
             if extracted_values:
                 content += f"\n\nExtracted values:\n{extracted_values}"
             if analysis and analysis.warnings:
@@ -226,6 +258,11 @@ def elements_to_documents(
                 confidence=analysis.confidence if analysis else None,
                 values_estimated=bool(analysis.values_are_estimated) if analysis else False,
                 reconstructed_path=recon.get("reconstructed_path"),
+                enrichment_status=(
+                    "completed"
+                    if analysis
+                    else (el.skip_reason or "not_enriched")
+                ),
             )
             docs.append(Document(page_content=content, metadata=meta))
             figure_counter += 1

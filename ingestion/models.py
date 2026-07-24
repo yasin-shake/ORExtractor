@@ -9,8 +9,8 @@ from pydantic import BaseModel, Field
 
 PIPELINE_VERSION = "2"
 VISUAL_PROMPT_VERSION = "1"
-VISUAL_SCHEMA_VERSION = "1"
-PARTITIONER_VERSION = "1"
+VISUAL_SCHEMA_VERSION = "2"
+PARTITIONER_VERSION = "2"
 
 
 class ElementRecord(BaseModel):
@@ -74,6 +74,11 @@ class ChartSpecification(BaseModel):
     y_label: str = ""
     x_unit: str = ""
     y_unit: str = ""
+    x_min: Optional[float] = None
+    x_max: Optional[float] = None
+    y_min: Optional[float] = None
+    y_max: Optional[float] = None
+    expected_series_count: Optional[int] = None
     series: List[ChartSeries] = Field(default_factory=list)
 
 
@@ -134,6 +139,11 @@ class ReportIngestStats(BaseModel):
     figures: int = 0
     bedrock_calls: int = 0
     cache_hits: int = 0
+    partition_cache_hits: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    bedrock_latency_ms: float = 0.0
+    retry_count: int = 0
     reconstructed_charts: int = 0
     reconstructed_diagrams: int = 0
     warnings: int = 0
@@ -151,6 +161,11 @@ class IngestionMetrics(BaseModel):
     total_ms: float = 0.0
     bedrock_calls: int = 0
     cache_hits: int = 0
+    partition_cache_hits: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    bedrock_latency_ms: float = 0.0
+    retry_count: int = 0
 
 
 class IngestionResult(BaseModel):

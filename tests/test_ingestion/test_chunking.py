@@ -58,6 +58,9 @@ def test_table_and_figure_chunks():
     docs = elements_to_documents(
         [table, figure],
         analyses={"f1": analysis},
+        reconstructions={
+            "f1": {"reconstruction_allowed": True, "reason": "chart"}
+        },
         chunk_size=1400,
         chunk_overlap=0,
     )
@@ -67,3 +70,42 @@ def test_table_and_figure_chunks():
     fig = next(d for d in docs if d.metadata["type"] == "chart_data")
     assert fig.metadata["figure_type"] == "line_chart"
     assert fig.metadata["element_id"] == "f1"
+
+
+def test_unvalidated_table_normalization_is_not_indexed():
+    from ingestion.models import TableValidation
+
+    table = _el(
+        element_id="t1",
+        category="Table",
+        text="Authoritative raw value: 10",
+    )
+    validation = TableValidation(
+        is_valid=False,
+        confidence=0.99,
+        normalized_markdown="Invented value: 999",
+        issues=["crop_disagrees"],
+    )
+    docs = elements_to_documents(
+        [table],
+        validations={"t1": validation},
+    )
+    assert "Authoritative raw value: 10" in docs[0].page_content
+    assert "Invented value: 999" not in docs[0].page_content
+    assert docs[0].metadata["table_valid"] is False
+
+
+def test_failed_visual_keeps_surrounding_context_searchable():
+    figure = _el(
+        element_id="f2",
+        category="Image",
+        text="",
+        caption="Figure 2",
+        preceding_text="Recovery improves with finer grinding.",
+        following_text="The testwork is preliminary.",
+        skip_reason="enrichment_failed",
+    )
+    docs = elements_to_documents([figure])
+    assert "Recovery improves" in docs[0].page_content
+    assert "testwork is preliminary" in docs[0].page_content
+    assert docs[0].metadata["enrichment_status"] == "enrichment_failed"

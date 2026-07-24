@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -12,8 +13,11 @@ from tqdm import tqdm
 from ingestion.cache import (
     EnrichmentCache,
     build_manifest_entry,
+    file_sha256,
     load_ingest_manifest,
+    load_partition_cache,
     save_ingest_manifest,
+    save_partition_cache,
     should_skip_pdf,
 )
 from ingestion.chunking import elements_to_documents
@@ -34,6 +38,28 @@ from ingestion.visuals import reconstruct_visuals
 __all__ = ["IngestionPipeline", "PIPELINE_VERSION"]
 
 
+def _source_document_ids(vectorstore, source_file: str) -> set[str]:
+    """Read existing IDs so changed chunk layouts do not leave stale records."""
+    collection = getattr(vectorstore, "_collection", None)
+    if collection is None:
+        return set()
+    try:
+        result = collection.get(where={"source": source_file}, include=[])
+        return set(result.get("ids") or [])
+    except Exception:
+        return set()
+
+
+def _delete_document_ids(vectorstore, document_ids: set[str]) -> None:
+    if not document_ids:
+        return
+    collection = getattr(vectorstore, "_collection", None)
+    if collection is not None:
+        collection.delete(ids=sorted(document_ids))
+        return
+    vectorstore.delete(ids=sorted(document_ids))
+
+
 class IngestionPipeline:
     def __init__(self, settings, *, enable_visuals: bool = True, partition_only: bool = False):
         self.settings = settings
@@ -49,24 +75,24 @@ class IngestionPipeline:
         reprocess_visuals: bool = False,
     ) -> IngestionResult:
         from rag_app import (
-            _add_documents_with_retry,
-            build_doc_id,
             get_embedder,
             get_vectorstore,
             iter_pdf_paths,
         )
 
         t_total = time.perf_counter()
-        chroma_client = chromadb.PersistentClient(path=str(self.settings.chroma_dir))
-        if rebuild:
-            try:
-                chroma_client.delete_collection(name=self.settings.collection_name)
-                print("Rebuilt vector index (old records removed).")
-            except Exception as exc:
-                print(f"Warning: could not delete collection '{self.settings.collection_name}': {exc}")
+        vectorstore = None
+        if not self.partition_only:
+            chroma_client = chromadb.PersistentClient(path=str(self.settings.chroma_dir))
+            if rebuild:
+                try:
+                    chroma_client.delete_collection(name=self.settings.collection_name)
+                    print("Rebuilt vector index (old records removed).")
+                except Exception as exc:
+                    print(f"Warning: could not delete collection '{self.settings.collection_name}': {exc}")
 
-        embedder = get_embedder(self.settings)
-        vectorstore = get_vectorstore(self.settings, embedder)
+            embedder = get_embedder(self.settings)
+            vectorstore = get_vectorstore(self.settings, embedder)
 
         pdf_paths = list(iter_pdf_paths(self.settings.knowledge_dir, self.settings.extra_pdf_dirs))
         if only_file:
@@ -106,6 +132,7 @@ class IngestionPipeline:
                 )
                 result.reports.append(report_stats)
                 result.files.append(pdf_path.name)
+                result.errors.extend(getattr(self, "_last_report_errors", []))
                 if not self.partition_only:
                     manifest[pdf_path.name] = build_manifest_entry(
                         pdf_path,
@@ -117,6 +144,7 @@ class IngestionPipeline:
                         failed_element_ids=report_stats.failed_elements,
                         partitioner=getattr(self.partitioner, "provider_name", "unstructured-local"),
                         partition_strategy=getattr(self.settings, "unstructured_strategy", "hi_res"),
+                        visual_enrichment_enabled=self.enable_visuals,
                     )
                     save_ingest_manifest(self.settings.chroma_dir, manifest)
             except Exception as exc:
@@ -127,6 +155,10 @@ class IngestionPipeline:
 
         metrics.total_ms = (time.perf_counter() - t_total) * 1000
         result.metrics = metrics
+        if result.errors:
+            result.status = (
+                "completed_with_errors" if result.reports else "failed"
+            )
         print(
             f"\nUnstructured ingestion complete. "
             f"{sum(r.indexed_chunks for r in result.reports)} chunks across "
@@ -150,12 +182,33 @@ class IngestionPipeline:
         artifact_dir = Path(self.settings.artifact_dir) / pdf_path.stem
         artifact_dir.mkdir(parents=True, exist_ok=True)
         cache = EnrichmentCache(artifact_dir / "cache")
+        self._last_report_errors: List[IngestionError] = []
 
         with stage_span("ingest-report", {"source": pdf_path.name}, enabled=tracing):
             t0 = time.perf_counter()
             with stage_span("partition-pdf", {"source": pdf_path.name}, enabled=tracing):
-                elements = self.partitioner.partition(pdf_path)
+                elements = load_partition_cache(
+                    artifact_dir,
+                    pdf_path,
+                    self.settings,
+                    self.partitioner,
+                )
+                partition_cache_hit = elements is not None
+                if elements is None:
+                    elements = self.partitioner.partition(pdf_path)
+                    save_partition_cache(
+                        artifact_dir,
+                        pdf_path,
+                        self.settings,
+                        self.partitioner,
+                        elements,
+                    )
+                else:
+                    metrics.partition_cache_hits += 1
             metrics.partition_ms += (time.perf_counter() - t0) * 1000
+            source_sha256 = file_sha256(pdf_path)
+            for element in elements:
+                element.metadata["source_sha256"] = source_sha256
 
             t0 = time.perf_counter()
             with stage_span("normalize-elements", enabled=tracing):
@@ -172,7 +225,16 @@ class IngestionPipeline:
             validations = {}
             errors: List[IngestionError] = []
             recon = {}
-            enrich_stats = {"bedrock_calls": 0, "cache_hits": 0, "warnings": 0}
+            reconstruction_warning_count = 0
+            enrich_stats = {
+                "bedrock_calls": 0,
+                "cache_hits": 0,
+                "warnings": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "latency_ms": 0.0,
+                "retry_count": 0,
+            }
 
             if not self.partition_only:
                 t0 = time.perf_counter()
@@ -182,14 +244,39 @@ class IngestionPipeline:
                         self.settings,
                         cache=cache,
                         enable_visuals=self.enable_visuals,
+                        bypass_cache=reprocess_visuals,
                     )
                 metrics.enrich_ms += (time.perf_counter() - t0) * 1000
                 metrics.bedrock_calls += enrich_stats.get("bedrock_calls", 0)
                 metrics.cache_hits += enrich_stats.get("cache_hits", 0)
+                metrics.input_tokens += enrich_stats.get("input_tokens", 0)
+                metrics.output_tokens += enrich_stats.get("output_tokens", 0)
+                metrics.bedrock_latency_ms += enrich_stats.get("latency_ms", 0.0)
+                metrics.retry_count += enrich_stats.get("retry_count", 0)
+
+                enrichments_dir = artifact_dir / "enrichments"
+                enrichments_dir.mkdir(parents=True, exist_ok=True)
+                for element_id, validation in validations.items():
+                    (enrichments_dir / f"{element_id}-table.json").write_text(
+                        validation.model_dump_json(indent=2),
+                        encoding="utf-8",
+                    )
 
                 t0 = time.perf_counter()
                 with stage_span("reconstruct-visuals", enabled=tracing):
                     recon, _ = reconstruct_visuals(elements, analyses, self.settings, artifact_dir)
+                    reconstruction_warning_count = sum(
+                        max(
+                            0,
+                            len(info.get("warnings") or [])
+                            - len(
+                                analyses[element_id].warnings
+                                if element_id in analyses
+                                else []
+                            ),
+                        )
+                        for element_id, info in recon.items()
+                    )
                 metrics.reconstruct_ms += (time.perf_counter() - t0) * 1000
 
                 t0 = time.perf_counter()
@@ -201,6 +288,21 @@ class IngestionPipeline:
                         reconstructions=recon,
                         chunk_size=self.settings.chunk_size,
                         chunk_overlap=self.settings.chunk_overlap,
+                        table_confidence_threshold=self.settings.bedrock_visual_confidence_threshold,
+                    )
+                    (artifact_dir / "chunks.json").write_text(
+                        json.dumps(
+                            [
+                                {
+                                    "page_content": document.page_content,
+                                    "metadata": document.metadata,
+                                }
+                                for document in docs
+                            ],
+                            indent=2,
+                            ensure_ascii=True,
+                        ),
+                        encoding="utf-8",
                     )
                 metrics.chunk_ms += (time.perf_counter() - t0) * 1000
 
@@ -232,12 +334,18 @@ class IngestionPipeline:
                     ]
                 with stage_span("upsert-chroma", enabled=tracing):
                     if docs:
+                        existing_ids = _source_document_ids(
+                            vectorstore, pdf_path.name
+                        )
                         _add_documents_with_retry(
                             vectorstore=vectorstore,
                             docs=docs,
                             ids=ids,
                             batch_size=self.settings.upsert_batch_size,
                         )
+                        stale_ids = existing_ids.difference(ids)
+                        if stale_ids:
+                            _delete_document_ids(vectorstore, stale_ids)
                 metrics.embed_ms += (time.perf_counter() - t0) * 1000
                 indexed = len(docs)
             else:
@@ -250,6 +358,7 @@ class IngestionPipeline:
             1 for v in recon.values() if v.get("reconstruction_allowed") and v.get("reason") == "diagram"
         )
         failed = [e.element_id for e in errors if e.element_id]
+        self._last_report_errors = errors
 
         tqdm.write(
             f"  {pdf_path.name}: {len(elements)} elements → {indexed} chunks "
@@ -265,9 +374,17 @@ class IngestionPipeline:
             figures=figure_n,
             bedrock_calls=enrich_stats.get("bedrock_calls", 0),
             cache_hits=enrich_stats.get("cache_hits", 0),
+            partition_cache_hits=int(partition_cache_hit),
+            input_tokens=enrich_stats.get("input_tokens", 0),
+            output_tokens=enrich_stats.get("output_tokens", 0),
+            bedrock_latency_ms=enrich_stats.get("latency_ms", 0.0),
+            retry_count=enrich_stats.get("retry_count", 0),
             reconstructed_charts=reconstructed_charts,
             reconstructed_diagrams=reconstructed_diagrams,
-            warnings=enrich_stats.get("warnings", 0),
+            warnings=(
+                enrich_stats.get("warnings", 0)
+                + reconstruction_warning_count
+            ),
             failed_elements=failed,
             indexed_chunks=indexed,
         )

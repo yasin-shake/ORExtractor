@@ -24,10 +24,12 @@ def _ingest_payload(saved: List[str], result: Any, status: str) -> dict:
     payload: dict = {"status": status, "files": saved}
     if result is not None and hasattr(result, "model_dump"):
         data = result.model_dump()
-        if "reports" in data:
-            payload["reports"] = data["reports"]
-        if "status" in data:
-            payload["status"] = data["status"]
+        for field in ("reports", "errors", "metrics"):
+            if field in data:
+                payload[field] = data[field]
+        payload["status"] = data.get("status", payload["status"])
+        if not saved and data.get("files"):
+            payload["files"] = data["files"]
     elif isinstance(result, dict):
         payload.update({k: v for k, v in result.items() if k != "files"})
     return payload

@@ -75,7 +75,7 @@ class Settings:
     olmocr_model: str = "allenai/olmOCR-7B-0225-preview"
     olmocr_workers: int = 4
     spatial_dir: Path = Path("spatial_data")
-    # Unstructured / visual ingestion (Phase A+B)
+    # Unstructured / visual ingestion
     ingestion_backend: str = "olmocr"
     unstructured_provider: str = "local"
     unstructured_strategy: str = "hi_res"
@@ -88,6 +88,10 @@ class Settings:
     bedrock_visual_confidence_threshold: float = 0.85
     visual_min_width: int = 250
     visual_min_height: int = 150
+    visual_max_width: int = 4096
+    visual_max_height: int = 4096
+    visual_max_calls_per_report: int = 100
+    visual_token_budget_per_report: int = 350000
     visual_reconstruct_charts: bool = True
     visual_reconstruct_diagrams: bool = True
     visual_enrichment_enabled: bool = True
@@ -159,6 +163,12 @@ def load_settings() -> Settings:
         ),
         visual_min_width=int(os.getenv("VISUAL_MIN_WIDTH", "250")),
         visual_min_height=int(os.getenv("VISUAL_MIN_HEIGHT", "150")),
+        visual_max_width=int(os.getenv("VISUAL_MAX_WIDTH", "4096")),
+        visual_max_height=int(os.getenv("VISUAL_MAX_HEIGHT", "4096")),
+        visual_max_calls_per_report=int(os.getenv("VISUAL_MAX_CALLS_PER_REPORT", "100")),
+        visual_token_budget_per_report=int(
+            os.getenv("VISUAL_TOKEN_BUDGET_PER_REPORT", "350000")
+        ),
         visual_reconstruct_charts=_env_bool("VISUAL_RECONSTRUCT_CHARTS", True),
         visual_reconstruct_diagrams=_env_bool("VISUAL_RECONSTRUCT_DIAGRAMS", True),
         visual_enrichment_enabled=_env_bool("VISUAL_ENRICHMENT_ENABLED", True),
@@ -1249,7 +1259,8 @@ def main() -> int:
     try:
         settings = load_settings()
         if args.command == "ingest":
-            check_openai_connectivity(settings)
+            if not args.partition_only:
+                check_openai_connectivity(settings)
             ingest(
                 settings,
                 rebuild=args.rebuild,
