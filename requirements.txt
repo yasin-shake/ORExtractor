@@ -27,6 +27,17 @@ streamlit
 # Install separately on the GPU host:  pip install olmocr
 pyyaml              # parse olmocr YAML page responses
 PyMuPDF             # fitz — PDF page rendering and text-layer fallback
+unstructured[pdf]   # layout-aware PDF partition (INGESTION_BACKEND=unstructured)
+pillow              # image size checks and crop persistence
+tenacity            # Bedrock retry with backoff
+
+# ── Visual reconstruction ─────────────────────────────────────────────────────
+plotly
+kaleido             # Plotly static image export
+graphviz            # process / flowchart reconstruction
+
+# ── Observability ─────────────────────────────────────────────────────────────
+langsmith
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 tqdm

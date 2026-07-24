@@ -4,6 +4,9 @@
 # Vector database (rebuilt locally via ingest)
 .chroma_db/
 
+# Ingestion artifacts (figure crops, enrichments, reconstructions)
+ingestion_artifacts/
+
 # Structured extraction output
 extracted_data/
 

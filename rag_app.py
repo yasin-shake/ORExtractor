@@ -75,6 +75,32 @@ class Settings:
     olmocr_model: str = "allenai/olmOCR-7B-0225-preview"
     olmocr_workers: int = 4
     spatial_dir: Path = Path("spatial_data")
+    # Unstructured / visual ingestion (Phase A+B)
+    ingestion_backend: str = "olmocr"
+    unstructured_provider: str = "local"
+    unstructured_strategy: str = "hi_res"
+    unstructured_api_url: Optional[str] = None
+    unstructured_api_key: str = ""
+    artifact_dir: Path = Path("ingestion_artifacts")
+    bedrock_visual_model_id: str = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
+    bedrock_visual_max_tokens: int = 3500
+    bedrock_visual_concurrency: int = 6
+    bedrock_visual_confidence_threshold: float = 0.85
+    visual_min_width: int = 250
+    visual_min_height: int = 150
+    visual_reconstruct_charts: bool = True
+    visual_reconstruct_diagrams: bool = True
+    visual_enrichment_enabled: bool = True
+    langsmith_tracing: bool = False
+    langsmith_project: str = "orextractor-ingestion"
+    langsmith_trace_content: bool = False
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def load_settings() -> Settings:
@@ -84,6 +110,9 @@ def load_settings() -> Settings:
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not openai_key:
         raise RuntimeError("OPENAI_API_KEY is required for embeddings. Add it to .env before running.")
+    backend = os.getenv("INGESTION_BACKEND", "olmocr").strip().lower() or "olmocr"
+    if backend not in {"olmocr", "unstructured"}:
+        raise RuntimeError(f"INGESTION_BACKEND must be 'olmocr' or 'unstructured', got {backend!r}")
     return Settings(
         openai_api_key=openai_key,
         openai_base_url=os.getenv("OPENAI_BASE_URL", "").strip() or None,
@@ -113,6 +142,29 @@ def load_settings() -> Settings:
         olmocr_model=os.getenv("OLMOCR_MODEL", "allenai/olmOCR-7B-0225-preview"),
         olmocr_workers=int(os.getenv("OLMOCR_WORKERS", "4")),
         spatial_dir=Path(os.getenv("RAG_SPATIAL_DIR", "spatial_data")),
+        ingestion_backend=backend,
+        unstructured_provider=os.getenv("UNSTRUCTURED_PROVIDER", "local").strip() or "local",
+        unstructured_strategy=os.getenv("UNSTRUCTURED_STRATEGY", "hi_res").strip() or "hi_res",
+        unstructured_api_url=os.getenv("UNSTRUCTURED_API_URL", "").strip() or None,
+        unstructured_api_key=os.getenv("UNSTRUCTURED_API_KEY", "").strip(),
+        artifact_dir=Path(os.getenv("RAG_ARTIFACT_DIR", "ingestion_artifacts")),
+        bedrock_visual_model_id=os.getenv(
+            "BEDROCK_VISUAL_MODEL_ID",
+            "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+        ),
+        bedrock_visual_max_tokens=int(os.getenv("BEDROCK_VISUAL_MAX_TOKENS", "3500")),
+        bedrock_visual_concurrency=int(os.getenv("BEDROCK_VISUAL_CONCURRENCY", "6")),
+        bedrock_visual_confidence_threshold=float(
+            os.getenv("BEDROCK_VISUAL_CONFIDENCE_THRESHOLD", "0.85")
+        ),
+        visual_min_width=int(os.getenv("VISUAL_MIN_WIDTH", "250")),
+        visual_min_height=int(os.getenv("VISUAL_MIN_HEIGHT", "150")),
+        visual_reconstruct_charts=_env_bool("VISUAL_RECONSTRUCT_CHARTS", True),
+        visual_reconstruct_diagrams=_env_bool("VISUAL_RECONSTRUCT_DIAGRAMS", True),
+        visual_enrichment_enabled=_env_bool("VISUAL_ENRICHMENT_ENABLED", True),
+        langsmith_tracing=_env_bool("LANGSMITH_TRACING", False),
+        langsmith_project=os.getenv("LANGSMITH_PROJECT", "orextractor-ingestion"),
+        langsmith_trace_content=_env_bool("LANGSMITH_TRACE_CONTENT", False),
     )
 
 
@@ -633,7 +685,41 @@ def parse_pdf_to_documents(
     return docs
 
 
-def ingest(settings: Settings, rebuild: bool = False) -> None:
+def ingest(
+    settings: Settings,
+    rebuild: bool = False,
+    *,
+    only_file: Optional[str] = None,
+    enable_visuals: bool = True,
+    partition_only: bool = False,
+    reprocess_visuals: bool = False,
+    backend: Optional[str] = None,
+):
+    """Ingest PDFs into Chroma. Delegates to Unstructured pipeline when configured."""
+    chosen = (backend or settings.ingestion_backend or "olmocr").lower()
+    if chosen == "unstructured":
+        from ingestion.pipeline import IngestionPipeline
+
+        pipeline = IngestionPipeline(
+            settings,
+            enable_visuals=enable_visuals,
+            partition_only=partition_only,
+        )
+        return pipeline.ingest_all(
+            rebuild=rebuild,
+            only_file=only_file,
+            reprocess_visuals=reprocess_visuals,
+        )
+
+    return _ingest_olmocr(settings, rebuild=rebuild, only_file=only_file)
+
+
+def _ingest_olmocr(
+    settings: Settings,
+    rebuild: bool = False,
+    *,
+    only_file: Optional[str] = None,
+) -> None:
     chroma_client = chromadb.PersistentClient(path=str(settings.chroma_dir))
     if rebuild:
         try:
@@ -645,10 +731,12 @@ def ingest(settings: Settings, rebuild: bool = False) -> None:
     vectorstore = get_vectorstore(settings, embedder)
 
     pdf_paths = list(iter_pdf_paths(settings.knowledge_dir, settings.extra_pdf_dirs))
+    if only_file:
+        pdf_paths = [p for p in pdf_paths if p.name == only_file or p.stem == Path(only_file).stem]
     if not pdf_paths:
         dirs = [settings.knowledge_dir] + list(settings.extra_pdf_dirs)
         print(f"No PDFs found in {', '.join(str(d) for d in dirs)}")
-        return
+        return None
 
     # Load the change-detection manifest; wipe it when rebuilding from scratch.
     manifest = {} if rebuild else _load_manifest(settings.chroma_dir)
@@ -695,7 +783,23 @@ def ingest(settings: Settings, rebuild: bool = False) -> None:
     if skipped:
         parts.append(f"skipped {skipped} unchanged")
     print(f"\nIngestion complete. {', '.join(parts)} in '{settings.collection_name}'.")
+    return None
 
+
+def inspect_elements(settings: Settings, pdf_file: str) -> dict:
+    """Partition a PDF with Unstructured and print element diagnostics."""
+    from ingestion.pipeline import IngestionPipeline
+
+    pdf_paths = list(iter_pdf_paths(settings.knowledge_dir, settings.extra_pdf_dirs))
+    matches = [p for p in pdf_paths if p.name == pdf_file or p.stem == Path(pdf_file).stem]
+    if not matches:
+        path = Path(pdf_file)
+        if path.exists():
+            matches = [path]
+    if not matches:
+        raise FileNotFoundError(f"PDF not found: {pdf_file}")
+    pipeline = IngestionPipeline(settings, enable_visuals=False, partition_only=True)
+    return pipeline.inspect_elements(matches[0])
 
 def reindex_chapters(settings: Settings, vectorstore: Chroma) -> None:
     """Re-parse PDFs to rebuild chapter indexes and patch chunk ni_item metadata."""
@@ -1067,7 +1171,7 @@ def save_extraction(settings: Settings, report) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "NI 43-101 RAG + structured extraction with olmocr + OpenAI embeddings "
+            "NI 43-101 RAG + structured extraction with olmocr/Unstructured + OpenAI embeddings "
             "+ Claude via AWS Bedrock + Chroma."
         )
     )
@@ -1079,6 +1183,43 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Delete existing vectors before ingesting.",
     )
+    ingest_parser.add_argument(
+        "--file",
+        default=None,
+        help="Ingest a single PDF by filename.",
+    )
+    ingest_parser.add_argument(
+        "--backend",
+        choices=["olmocr", "unstructured"],
+        default=None,
+        help="Override INGESTION_BACKEND for this run.",
+    )
+    ingest_parser.add_argument(
+        "--no-visual-enrichment",
+        action="store_true",
+        help="Skip Bedrock visual enrichment (unstructured backend).",
+    )
+    ingest_parser.add_argument(
+        "--partition-only",
+        action="store_true",
+        help="Partition and normalize only; do not enrich, chunk, or upsert.",
+    )
+    ingest_parser.add_argument(
+        "--reprocess-visuals",
+        action="store_true",
+        help="Force visual enrichment even when the PDF fingerprint is unchanged.",
+    )
+
+    inspect_parser = subparsers.add_parser(
+        "inspect-elements",
+        help="Partition a PDF and print element / NI Item diagnostics.",
+    )
+    inspect_parser.add_argument(
+        "--file",
+        required=True,
+        help="PDF filename (in knowledge dirs) or path.",
+    )
+
     subparsers.add_parser("chat", help="Start interactive CLI chat.")
     extract_parser = subparsers.add_parser(
         "extract", help="Extract structured NI 43-101 data from ingested reports."
@@ -1109,7 +1250,20 @@ def main() -> int:
         settings = load_settings()
         if args.command == "ingest":
             check_openai_connectivity(settings)
-            ingest(settings, rebuild=args.rebuild)
+            ingest(
+                settings,
+                rebuild=args.rebuild,
+                only_file=args.file,
+                enable_visuals=not args.no_visual_enrichment,
+                partition_only=args.partition_only,
+                reprocess_visuals=args.reprocess_visuals,
+                backend=args.backend,
+            )
+        elif args.command == "inspect-elements":
+            import json
+
+            info = inspect_elements(settings, args.file)
+            print(json.dumps(info, indent=2))
         else:
             embedder = get_embedder(settings)
             vectorstore = get_vectorstore(settings, embedder)
