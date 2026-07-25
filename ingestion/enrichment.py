@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from io import BytesIO
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -203,17 +204,83 @@ def enrich_elements(
         if needs_table_validation(el):
             table_jobs.append(el)
 
-    max_calls = max(0, int(getattr(settings, "visual_max_calls_per_report", 100)))
+    max_calls = max(
+        0,
+        int(getattr(settings, "visual_max_calls_per_report", 30)),
+    )
     token_budget = max(
         0, int(getattr(settings, "visual_token_budget_per_report", 350000))
     )
     max_tokens = max(1, int(getattr(settings, "bedrock_visual_max_tokens", 3500)))
-    all_jobs = [("figure", el) for el in figure_jobs] + [
-        ("table", el) for el in table_jobs
+    max_table_calls = max(
+        0,
+        int(
+            getattr(
+                settings,
+                "visual_max_table_calls_per_report",
+                max_calls,
+            )
+        ),
+    )
+    max_figure_calls = max(
+        0,
+        int(
+            getattr(
+                settings,
+                "visual_max_figure_calls_per_report",
+                max_calls,
+            )
+        ),
+    )
+
+    def figure_priority(element: ElementRecord) -> tuple[int, int, int]:
+        due_diligence_item = int(element.ni_item or 0) in {
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            21,
+            22,
+            25,
+            26,
+        }
+        quantitative = bool(
+            re.search(
+                r"\b(grade|tonnage|resource|reserve|npv|irr|recovery|"
+                r"production|cash flow|capex|opex)\b",
+                f"{element.caption} {element.preceding_text}",
+                flags=re.IGNORECASE,
+            )
+        )
+        area = int(element.image_width or 0) * int(
+            element.image_height or 0
+        )
+        return (
+            0 if due_diligence_item else 1,
+            0 if quantitative else 1,
+            -area,
+        )
+
+    table_jobs = sorted(
+        table_jobs,
+        key=lambda element: (
+            0 if int(element.ni_item or 0) in {14, 15, 16, 21, 22} else 1,
+            element.page_number,
+        ),
+    )
+    figure_jobs = sorted(
+        figure_jobs,
+        key=figure_priority,
+    )
+    all_jobs = [("table", el) for el in table_jobs] + [
+        ("figure", el) for el in figure_jobs
     ]
     selected_jobs = []
     deferred_jobs = []
     estimated_tokens = 0
+    selected_by_kind = {"table": 0, "figure": 0}
     for kind, el in all_jobs:
         text_chars = len(el.preceding_text) + len(el.following_text) + len(el.caption)
         if kind == "table":
@@ -230,11 +297,20 @@ def enrich_elements(
         job_estimate = max_tokens + (text_chars // 4) + ((width * height) // 750)
         if (
             len(selected_jobs) >= max_calls
+            or (
+                kind == "table"
+                and selected_by_kind["table"] >= max_table_calls
+            )
+            or (
+                kind == "figure"
+                and selected_by_kind["figure"] >= max_figure_calls
+            )
             or estimated_tokens + job_estimate > token_budget
         ):
             deferred_jobs.append((kind, el))
             continue
         selected_jobs.append((kind, el))
+        selected_by_kind[kind] += 1
         estimated_tokens += job_estimate
     figure_jobs = [el for kind, el in selected_jobs if kind == "figure"]
     table_jobs = [el for kind, el in selected_jobs if kind == "table"]
@@ -307,7 +383,10 @@ def enrich_elements(
                 0.0,
             )
 
-    concurrency = max(1, int(getattr(settings, "bedrock_visual_concurrency", 6)))
+    concurrency = max(
+        1,
+        int(getattr(settings, "bedrock_visual_concurrency", 8)),
+    )
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         futures = [pool.submit(_analyse_figure, el) for el in figure_jobs]
         futures += [pool.submit(_validate_table, el) for el in table_jobs]

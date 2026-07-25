@@ -76,6 +76,8 @@ class Settings:
     extracted_dir: Path
     extract_top_k: int
     spatial_dir: Path = Path("spatial_data")
+    ingestion_pipeline_enabled: bool = True
+    ingestion_pipeline_queue_size: int = 2
     embedding_provider: str = "qwen"
     embedding_fallback_provider: str = "openai"
     openai_embed_dimensions: int = 1536
@@ -113,13 +115,22 @@ class Settings:
     docling_generate_page_images: bool = True
     docling_generate_picture_images: bool = True
     docling_images_scale: float = 1.0
-    docling_ocr_batch_size: int = 1
-    docling_layout_batch_size: int = 1
+    docling_ocr_batch_size: int = 2
+    docling_layout_batch_size: int = 2
     docling_table_batch_size: int = 1
     docling_queue_max_size: int = 2
-    docling_page_batch_size: int = 1
-    docling_num_threads: int = 2
+    docling_page_batch_size: int = 2
+    docling_num_threads: int = 4
     docling_device: str = "auto"
+    docling_adaptive_ocr: bool = True
+    docling_native_text_min_chars: int = 80
+    docling_native_text_coverage: float = 0.98
+    docling_native_text_max_empty_pages: int = 2
+    docling_batch_fallback_enabled: bool = True
+    docling_safe_batch_size: int = 1
+    docling_fast_table_max_pages: int = 20
+    docling_profiling: bool = True
+    docling_converter_cache_size: int = 2
     docling_heading_hierarchy: bool = True
     docling_timeout_seconds: int = 900
     docling_max_pages: int = 1000
@@ -134,13 +145,15 @@ class Settings:
     artifact_dir: Path = Path("ingestion_artifacts")
     bedrock_visual_model_id: str = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
     bedrock_visual_max_tokens: int = 3500
-    bedrock_visual_concurrency: int = 6
+    bedrock_visual_concurrency: int = 8
     bedrock_visual_confidence_threshold: float = 0.85
     visual_min_width: int = 250
     visual_min_height: int = 150
     visual_max_width: int = 4096
     visual_max_height: int = 4096
-    visual_max_calls_per_report: int = 100
+    visual_max_calls_per_report: int = 30
+    visual_max_table_calls_per_report: int = 20
+    visual_max_figure_calls_per_report: int = 10
     visual_token_budget_per_report: int = 350000
     visual_reconstruct_charts: bool = True
     visual_reconstruct_diagrams: bool = True
@@ -192,6 +205,10 @@ def load_settings() -> Settings:
         extracted_dir=Path(os.getenv("RAG_EXTRACTED_DIR", "extracted_data")),
         extract_top_k=int(os.getenv("NI43101_EXTRACT_TOP_K", "12")),
         spatial_dir=Path(os.getenv("RAG_SPATIAL_DIR", "spatial_data")),
+        ingestion_pipeline_enabled=_env_bool("INGEST_PIPELINE_ENABLED", True),
+        ingestion_pipeline_queue_size=max(
+            1, int(os.getenv("INGEST_PIPELINE_QUEUE_SIZE", "2"))
+        ),
         embedding_provider=os.getenv(
             "EMBEDDING_PROVIDER", "qwen"
         ).strip().lower() or "qwen",
@@ -274,13 +291,36 @@ def load_settings() -> Settings:
             "DOCLING_GENERATE_PICTURE_IMAGES", True
         ),
         docling_images_scale=float(os.getenv("DOCLING_IMAGES_SCALE", "1.0")),
-        docling_ocr_batch_size=int(os.getenv("DOCLING_OCR_BATCH_SIZE", "1")),
-        docling_layout_batch_size=int(os.getenv("DOCLING_LAYOUT_BATCH_SIZE", "1")),
+        docling_ocr_batch_size=int(os.getenv("DOCLING_OCR_BATCH_SIZE", "2")),
+        docling_layout_batch_size=int(os.getenv("DOCLING_LAYOUT_BATCH_SIZE", "2")),
         docling_table_batch_size=int(os.getenv("DOCLING_TABLE_BATCH_SIZE", "1")),
         docling_queue_max_size=int(os.getenv("DOCLING_QUEUE_MAX_SIZE", "2")),
-        docling_page_batch_size=int(os.getenv("DOCLING_PAGE_BATCH_SIZE", "1")),
-        docling_num_threads=int(os.getenv("DOCLING_NUM_THREADS", "2")),
+        docling_page_batch_size=int(os.getenv("DOCLING_PAGE_BATCH_SIZE", "2")),
+        docling_num_threads=int(os.getenv("DOCLING_NUM_THREADS", "4")),
         docling_device=os.getenv("DOCLING_DEVICE", "auto").strip().lower() or "auto",
+        docling_adaptive_ocr=_env_bool("DOCLING_ADAPTIVE_OCR", True),
+        docling_native_text_min_chars=int(
+            os.getenv("DOCLING_NATIVE_TEXT_MIN_CHARS", "80")
+        ),
+        docling_native_text_coverage=float(
+            os.getenv("DOCLING_NATIVE_TEXT_COVERAGE", "0.98")
+        ),
+        docling_native_text_max_empty_pages=int(
+            os.getenv("DOCLING_NATIVE_TEXT_MAX_EMPTY_PAGES", "2")
+        ),
+        docling_batch_fallback_enabled=_env_bool(
+            "DOCLING_BATCH_FALLBACK_ENABLED", True
+        ),
+        docling_safe_batch_size=max(
+            1, int(os.getenv("DOCLING_SAFE_BATCH_SIZE", "1"))
+        ),
+        docling_fast_table_max_pages=max(
+            0, int(os.getenv("DOCLING_FAST_TABLE_MAX_PAGES", "20"))
+        ),
+        docling_profiling=_env_bool("DOCLING_PROFILING", True),
+        docling_converter_cache_size=max(
+            1, int(os.getenv("DOCLING_CONVERTER_CACHE_SIZE", "2"))
+        ),
         docling_heading_hierarchy=_env_bool("DOCLING_HEADING_HIERARCHY", True),
         docling_timeout_seconds=int(os.getenv("DOCLING_TIMEOUT_SECONDS", "900")),
         docling_max_pages=int(os.getenv("DOCLING_MAX_PAGES", "1000")),
@@ -302,7 +342,7 @@ def load_settings() -> Settings:
             "us.anthropic.claude-3-5-haiku-20241022-v1:0",
         ),
         bedrock_visual_max_tokens=int(os.getenv("BEDROCK_VISUAL_MAX_TOKENS", "3500")),
-        bedrock_visual_concurrency=int(os.getenv("BEDROCK_VISUAL_CONCURRENCY", "6")),
+        bedrock_visual_concurrency=int(os.getenv("BEDROCK_VISUAL_CONCURRENCY", "8")),
         bedrock_visual_confidence_threshold=float(
             os.getenv("BEDROCK_VISUAL_CONFIDENCE_THRESHOLD", "0.85")
         ),
@@ -310,7 +350,13 @@ def load_settings() -> Settings:
         visual_min_height=int(os.getenv("VISUAL_MIN_HEIGHT", "150")),
         visual_max_width=int(os.getenv("VISUAL_MAX_WIDTH", "4096")),
         visual_max_height=int(os.getenv("VISUAL_MAX_HEIGHT", "4096")),
-        visual_max_calls_per_report=int(os.getenv("VISUAL_MAX_CALLS_PER_REPORT", "100")),
+        visual_max_calls_per_report=int(os.getenv("VISUAL_MAX_CALLS_PER_REPORT", "30")),
+        visual_max_table_calls_per_report=int(
+            os.getenv("VISUAL_MAX_TABLE_CALLS_PER_REPORT", "20")
+        ),
+        visual_max_figure_calls_per_report=int(
+            os.getenv("VISUAL_MAX_FIGURE_CALLS_PER_REPORT", "10")
+        ),
         visual_token_budget_per_report=int(
             os.getenv("VISUAL_TOKEN_BUDGET_PER_REPORT", "350000")
         ),

@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import fitz
 import pytest
 
 from ingestion.parsers.docling_parser import DoclingParser
@@ -96,3 +97,91 @@ def test_cache_signature_tracks_memory_settings():
     assert signature["queue_max_size"] == 7
     assert signature["page_batch_size"] == 1
     assert signature["num_threads"] == 2
+
+
+def test_adaptive_ocr_skips_complete_native_text_pdf(tmp_path):
+    pdf_path = tmp_path / "native.pdf"
+    document = fitz.open()
+    for _ in range(2):
+        page = document.new_page()
+        page.insert_text(
+            (72, 72),
+            "Native technical report text " * 10,
+        )
+    document.save(pdf_path)
+    document.close()
+
+    parser = DoclingParser(
+        _settings(
+            docling_adaptive_ocr=True,
+            docling_native_text_min_chars=80,
+            docling_native_text_coverage=0.98,
+            docling_native_text_max_empty_pages=0,
+        )
+    )
+    preflight = parser._preflight_pdf(pdf_path)
+
+    assert preflight["effective_do_ocr"] is False
+    assert preflight["native_text_coverage"] == 1.0
+    assert parser._effective_table_mode(preflight) == "fast"
+
+
+def test_adaptive_ocr_retains_ocr_for_empty_pages(tmp_path):
+    pdf_path = tmp_path / "scanned.pdf"
+    document = fitz.open()
+    document.new_page()
+    document.new_page()
+    document.save(pdf_path)
+    document.close()
+
+    parser = DoclingParser(
+        _settings(
+            docling_adaptive_ocr=True,
+            docling_native_text_max_empty_pages=0,
+        )
+    )
+
+    assert parser._preflight_pdf(pdf_path)["effective_do_ocr"] is True
+
+
+def test_native_memory_failure_retries_safe_batch(monkeypatch, tmp_path):
+    class _FailingConverter:
+        def convert(self, *_args, **_kwargs):
+            raise RuntimeError("std::bad_alloc")
+
+    class _SuccessfulConverter:
+        def convert(self, *_args, **_kwargs):
+            return SimpleNamespace(errors=[])
+
+    parser = DoclingParser(
+        _settings(
+            docling_batch_fallback_enabled=True,
+            docling_safe_batch_size=1,
+            docling_page_batch_size=2,
+        )
+    )
+    monkeypatch.setattr(
+        parser,
+        "_preflight_pdf",
+        lambda _path: {
+            "effective_do_ocr": True,
+            "page_count": 10,
+        },
+    )
+    monkeypatch.setattr(
+        parser,
+        "_get_converter",
+        lambda **_kwargs: next(converters),
+    )
+    monkeypatch.setattr(
+        parser,
+        "_release_failed_converter",
+        lambda _converter: None,
+    )
+    converters = iter([_FailingConverter(), _SuccessfulConverter()])
+
+    conversion, runtime = parser._convert_local(tmp_path / "report.pdf")
+
+    assert conversion.errors == []
+    assert runtime["safe_batch_fallback_used"] is True
+    assert runtime["page_batch_size"] == 1

@@ -95,6 +95,33 @@ def test_manifest_invalidation_on_pipeline_version(tmp_path):
     assert should_skip_pdf(entry4, pdf, settings) is False
 
 
+def test_text_only_manifest_is_resumable_in_text_only_mode(tmp_path):
+    pdf = tmp_path / "text-only.pdf"
+    pdf.write_bytes(b"%PDF text only")
+    settings = _Settings()
+    settings.resolved_visual_enrichment_enabled = False
+    entry = build_manifest_entry(
+        pdf,
+        settings,
+        element_count=1,
+        visual_count=0,
+        table_count=0,
+        indexed_chunk_count=1,
+        failed_element_ids=[],
+        visual_enrichment_enabled=False,
+        parser_result=ParserResult(
+            source_file=pdf.name,
+            parser="docling",
+            parser_version="test",
+            quality=ParserQualityReport(score=1.0),
+        ),
+    )
+
+    assert should_skip_pdf(entry, pdf, settings) is True
+    settings.resolved_visual_enrichment_enabled = True
+    assert should_skip_pdf(entry, pdf, settings) is False
+
+
 def test_parser_cache_roundtrip_and_source_invalidation(tmp_path):
     class _Parser:
         def cache_signature(self):

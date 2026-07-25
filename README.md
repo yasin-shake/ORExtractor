@@ -84,6 +84,14 @@ python rag_app.py ingest
 
 Set `INGESTION_BACKEND=docling` to use the layout-aware pipeline. Docling's lossless JSON and Markdown, normalized elements, table/figure crops, quality report, and parser-selection decision are retained. If configured gates fail, MinerU runs on the whole document and the router selects one complete canonical stream by deterministic score. The selected stream is converted to standard LangChain `Document` records with parser provenance.
 
+Multi-report ingestion uses a bounded three-stage pipeline: the main thread
+parses report N with one reusable Docling converter, a worker enriches report
+N-1 through Bedrock, and a single indexing worker embeds/upserts report N-2.
+Only the indexing worker writes to Chroma. Adaptive OCR skips RapidOCR when
+nearly every page already has native text; scanned or mixed documents retain
+GPU OCR. Per-report Docling timings and runtime decisions are saved in
+`parsers/docling/profiling.json`.
+
 Claude Haiku is called only for routed figures and important or suspicious tables. A failed visual call is recorded per element and does not stop normal text ingestion. Reconstruction is deterministic through Plotly or Graphviz, never executes model-generated code, and rejects geological maps, cross-sections, mine plans, block models, and similar technical geometry.
 
 Partition output, normalized elements, structured model responses, final chunks, and reconstruction audit manifests are stored below `RAG_ARTIFACT_DIR`. Versioned cache keys include source, image/context, parser, model, prompt, and schema versions. Chroma records retain scalar metadata for source, page, type, NI Item, section title, element ID, and asset provenance.
@@ -104,6 +112,17 @@ The first command deletes the configured Chroma collection and rebuilds it from 
 For a nested report, pass its relative source path, for example
 `--file "Sedar_2024/April/report.pdf"`. A basename remains valid when it is
 unique across all configured PDF trees.
+
+For the fastest time to a searchable full-corpus index, run a text-first pass
+and enrich visuals afterward:
+
+```bash
+python rag_app.py ingest --rebuild --parser docling --fallback mineru --no-visual-enrichment
+python rag_app.py ingest --parser docling --fallback mineru
+```
+
+Both passes are resumable. If interrupted, rerun the same command without
+`--rebuild`; completed reports are skipped using the manifest.
 
 The embedding backend is selected once at process startup. If local Qwen fails
 its health check, ORExtractor uses the configured OpenAI fallback before opening
@@ -392,6 +411,8 @@ The API is available at `http://localhost:8000`. The bundled `docker-compose.yml
 | `RAG_TOP_K` | `8` | Chunks retrieved per non-agentic chat query |
 | `RAG_EXTRACTED_DIR` | `extracted_data` | Where structured extractions (and chapter indexes) are saved |
 | `NI43101_EXTRACT_TOP_K` | `12` | Chunks per topic/Item query fed to the extractor — lower to `6` if hitting rate limits |
+| `INGEST_PIPELINE_ENABLED` | `true` | Overlap parse, enrichment, and indexing through bounded single-owner stages |
+| `INGEST_PIPELINE_QUEUE_SIZE` | `2` | Reports buffered between stages; total in-flight work remains bounded |
 | `INGESTION_BACKEND` | `docling` | `docling` primary or `mineru` forced |
 | `PARSER_FALLBACK` | `mineru` | Quality-gated fallback parser |
 | `PARSER_FALLBACK_ENABLED` | `true` | Allow deterministic fallback routing |
@@ -402,13 +423,22 @@ The API is available at `http://localhost:8000`. The bundled `docker-compose.yml
 | `DOCLING_FORCE_FULL_PAGE_OCR` | `false` | OCR every page region; leave disabled to skip unnecessary OCR on native PDF text |
 | `DOCLING_OCR_BITMAP_AREA_THRESHOLD` | `0.05` | Minimum bitmap-area ratio that triggers adaptive OCR |
 | `DOCLING_IMAGES_SCALE` | `1.0` | Render scale for retained page/figure images |
-| `DOCLING_OCR_BATCH_SIZE` | `1` | OCR stage batch size; conservative for large PDFs |
-| `DOCLING_LAYOUT_BATCH_SIZE` | `1` | Layout stage batch size |
+| `DOCLING_OCR_BATCH_SIZE` | `2` | OCR target batch; native-memory failures automatically fall back to the safe batch |
+| `DOCLING_LAYOUT_BATCH_SIZE` | `2` | Layout stage target batch |
 | `DOCLING_TABLE_BATCH_SIZE` | `1` | Table stage batch size |
 | `DOCLING_QUEUE_MAX_SIZE` | `2` | Maximum buffered pages between Docling stages |
-| `DOCLING_PAGE_BATCH_SIZE` | `1` | PDF pages admitted to the local pipeline together |
-| `DOCLING_NUM_THREADS` | `2` | Docling accelerator worker threads |
+| `DOCLING_PAGE_BATCH_SIZE` | `2` | Target PDF page batch; automatically falls back on native-memory failures |
+| `DOCLING_NUM_THREADS` | `4` | Docling accelerator worker threads |
 | `DOCLING_DEVICE` | `auto` | Accelerator: `auto`, `cpu`, `cuda`, `mps`, or `xpu` |
+| `DOCLING_ADAPTIVE_OCR` | `true` | Bypass OCR per document when native-text coverage passes the configured gate |
+| `DOCLING_NATIVE_TEXT_MIN_CHARS` | `80` | Minimum non-whitespace characters for a native-text page |
+| `DOCLING_NATIVE_TEXT_COVERAGE` | `0.98` | Native-text page ratio required to bypass OCR |
+| `DOCLING_NATIVE_TEXT_MAX_EMPTY_PAGES` | `2` | Maximum non-native pages allowed when bypassing OCR |
+| `DOCLING_BATCH_FALLBACK_ENABLED` | `true` | Retry native-memory failures with the safe batch and retain safe mode afterward |
+| `DOCLING_SAFE_BATCH_SIZE` | `1` | Low-memory retry batch size |
+| `DOCLING_FAST_TABLE_MAX_PAGES` | `20` | Use fast table mode for short reports; longer reports retain the configured mode |
+| `DOCLING_PROFILING` | `true` | Persist Docling timings and effective runtime decisions per report |
+| `DOCLING_CONVERTER_CACHE_SIZE` | `2` | Reusable Docling pipeline variants retained in memory |
 | `MINERU_EXECUTION_MODE` | `service` | `service` or isolated `cli` |
 | `MINERU_API_URL` | _(unset)_ | MinerU service endpoint |
 | `PARSER_MIN_TEXT_PAGE_COVERAGE` | `0.90` | Fallback text-page coverage gate; calibrate on corpus |
@@ -418,9 +448,11 @@ The API is available at `http://localhost:8000`. The bundled `docker-compose.yml
 | `RAG_ARTIFACT_DIR` | `ingestion_artifacts` | Retained source crops, raw/normalized partition output, enrichments, chunks, and audit manifests |
 | `BEDROCK_VISUAL_MODEL_ID` | Claude 3.5 Haiku inference profile | Separate Bedrock model/inference profile for visual ingestion |
 | `BEDROCK_VISUAL_MAX_TOKENS` | `3500` | Maximum output tokens per visual/table call |
-| `BEDROCK_VISUAL_CONCURRENCY` | `6` | Maximum concurrent visual/table calls |
+| `BEDROCK_VISUAL_CONCURRENCY` | `8` | Maximum concurrent visual/table calls |
 | `BEDROCK_VISUAL_CONFIDENCE_THRESHOLD` | `0.85` | Minimum confidence for reconstruction |
-| `VISUAL_MAX_CALLS_PER_REPORT` | `100` | Per-report visual/table call limit |
+| `VISUAL_MAX_CALLS_PER_REPORT` | `30` | Combined per-report visual/table call limit |
+| `VISUAL_MAX_TABLE_CALLS_PER_REPORT` | `20` | Table-validation share of the report call budget |
+| `VISUAL_MAX_FIGURE_CALLS_PER_REPORT` | `10` | Figure-analysis share of the report call budget |
 | `VISUAL_TOKEN_BUDGET_PER_REPORT` | `350000` | Conservative per-report visual token budget |
 | `LANGSMITH_TRACING` | `false` | Enable ingestion traces |
 | `LANGSMITH_TRACE_CONTENT` | `false` | Include document content in traces; disabled by default |
@@ -442,7 +474,7 @@ pytest
 - **NI Item tagging** — after parsing, `chapter_index.py` scans each chunk's full content for "Item N — …" headings to build a page-range chapter index per report, then tags every chunk's `ni_item` and `section_title` metadata. This powers Item-scoped retrieval in both extraction and agentic chat.
 - **Chunk overlap** — `RAG_CHUNK_OVERLAP` (default 150 chars) is applied during paragraph chunking: the tail of each completed chunk is prepended to the next chunk so context around paragraph boundaries is not lost at retrieval time.
 - **Embedding cache** — `OpenAIEmbeddings` is wrapped in a process-level query cache (`_CachedOpenAIEmbeddings`) so repeated queries across extraction passes and tool calls don't make redundant API calls.
-- **OpenAI connectivity** — the `check_openai_connectivity()` call at startup runs only for the `ingest` command. The `extract`, `chat`, and `reindex-chapters` commands do not touch OpenAI and can run without a live API connection.
+- **Embedding startup checks** — the selected local or OpenAI embedding backend is health-checked before a rebuild can delete the existing collection.
 - **Rate limiting** — Bedrock throttles at a per-account tokens-per-minute quota. The extractor uses exponential backoff starting at 60s per pass. Reduce `NI43101_EXTRACT_TOP_K` to shrink context size if limits persist.
 - **Extraction accuracy** — the extractor never invents values: any field absent from the retrieved context is returned as `null` or `[]`. Fields like coordinates, project stage, exchange listing, and political risk flags require that the report context contains the relevant disclosure.
 - **Map view** — requires `latitude` and `longitude` to have been extracted. Re-run extraction on existing reports (⚙ Extract) after upgrading to populate missing coordinate fields.

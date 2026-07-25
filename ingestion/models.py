@@ -237,6 +237,12 @@ class ReportIngestStats(BaseModel):
     fallback_attempted: bool = False
     fallback_used: bool = False
     fallback_reasons: List[str] = Field(default_factory=list)
+    parse_ms: float = 0.0
+    enrich_ms: float = 0.0
+    embed_ms: float = 0.0
+    total_ms: float = 0.0
+    effective_do_ocr: Optional[bool] = None
+    safe_batch_fallback_used: bool = False
 
 
 class IngestionMetrics(BaseModel):

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
+import gc
+from collections import OrderedDict
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,10 +27,17 @@ def _package_version(package: str) -> str:
 
 def _jsonable(value: Any) -> Any:
     if hasattr(value, "export_to_dict"):
-        return value.export_to_dict()
+        return _jsonable(value.export_to_dict())
     if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
+        return _jsonable(value.model_dump(mode="json"))
     if isinstance(value, dict):
+        return {
+            str(key): _jsonable(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return {"repr": repr(value)}
 
@@ -62,6 +72,8 @@ class DoclingParser:
         self.artifact_dir = Path(
             getattr(settings, "artifact_dir", Path("ingestion_artifacts"))
         )
+        self._converters: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
+        self._safe_batch_mode = False
 
     def cache_signature(self) -> dict[str, Any]:
         return {
@@ -113,9 +125,53 @@ class DoclingParser:
             "device": str(
                 getattr(self.settings, "docling_device", "auto")
             ).lower(),
+            "adaptive_ocr": bool(
+                getattr(self.settings, "docling_adaptive_ocr", True)
+            ),
+            "adaptive_ocr_preflight_version": "1",
+            "pymupdf_version": _package_version("PyMuPDF"),
+            "native_text_min_chars": int(
+                getattr(self.settings, "docling_native_text_min_chars", 80)
+            ),
+            "native_text_coverage": float(
+                getattr(self.settings, "docling_native_text_coverage", 0.98)
+            ),
+            "native_text_max_empty_pages": int(
+                getattr(
+                    self.settings,
+                    "docling_native_text_max_empty_pages",
+                    2,
+                )
+            ),
+            "batch_fallback_enabled": bool(
+                getattr(
+                    self.settings,
+                    "docling_batch_fallback_enabled",
+                    True,
+                )
+            ),
+            "safe_batch_size": _positive_setting(
+                self.settings, "docling_safe_batch_size", 1
+            ),
+            "fast_table_max_pages": max(
+                0,
+                int(
+                    getattr(
+                        self.settings,
+                        "docling_fast_table_max_pages",
+                        20,
+                    )
+                ),
+            ),
         }
 
-    def _pipeline_options(self):
+    def _pipeline_options(
+        self,
+        *,
+        effective_do_ocr: bool | None = None,
+        effective_table_mode: str | None = None,
+        safe_batches: bool = False,
+    ):
         try:
             from docling.datamodel.pipeline_options import PdfPipelineOptions
         except ImportError as exc:
@@ -125,8 +181,25 @@ class DoclingParser:
             ) from exc
 
         options = PdfPipelineOptions()
+        safe_batch_size = _positive_setting(
+            self.settings, "docling_safe_batch_size", 1
+        )
+        configured_do_ocr = bool(
+            getattr(self.settings, "docling_do_ocr", True)
+        )
+        do_ocr = (
+            configured_do_ocr
+            if effective_do_ocr is None
+            else bool(effective_do_ocr)
+        )
+
+        def stage_batch(name: str, default: int) -> int:
+            if safe_batches:
+                return safe_batch_size
+            return _positive_setting(self.settings, name, default)
+
         for name, value in {
-            "do_ocr": getattr(self.settings, "docling_do_ocr", True),
+            "do_ocr": do_ocr,
             "do_table_structure": getattr(
                 self.settings, "docling_do_table_structure", True
             ),
@@ -139,14 +212,18 @@ class DoclingParser:
             "images_scale": max(
                 0.1, float(getattr(self.settings, "docling_images_scale", 1.0))
             ),
-            "ocr_batch_size": _positive_setting(
-                self.settings, "docling_ocr_batch_size", 1
+            "ocr_batch_size": stage_batch(
+                "docling_ocr_batch_size", 1
             ),
-            "layout_batch_size": _positive_setting(
-                self.settings, "docling_layout_batch_size", 1
+            "layout_batch_size": stage_batch(
+                "docling_layout_batch_size", 1
             ),
-            "table_batch_size": _positive_setting(
-                self.settings, "docling_table_batch_size", 1
+            "table_batch_size": (
+                safe_batch_size
+                if safe_batches
+                else _positive_setting(
+                    self.settings, "docling_table_batch_size", 1
+                )
             ),
             "queue_max_size": _positive_setting(
                 self.settings, "docling_queue_max_size", 2
@@ -158,7 +235,7 @@ class DoclingParser:
             if hasattr(options, name):
                 setattr(options, name, value)
 
-        if getattr(self.settings, "docling_do_ocr", True):
+        if do_ocr:
             try:
                 from docling.datamodel.pipeline_options import RapidOcrOptions
 
@@ -213,7 +290,8 @@ class DoclingParser:
         table_options = getattr(options, "table_structure_options", None)
         if table_options is not None and hasattr(table_options, "mode"):
             mode_name = str(
-                getattr(self.settings, "docling_table_mode", "accurate")
+                effective_table_mode
+                or getattr(self.settings, "docling_table_mode", "accurate")
             ).upper()
             try:
                 from docling.datamodel.pipeline_options import TableFormerMode
@@ -239,39 +317,320 @@ class DoclingParser:
             accelerator_options.device = device
         return options
 
-    def _convert_local(self, pdf_path: Path):
+    def _preflight_pdf(self, pdf_path: Path) -> dict[str, Any]:
+        """Cheap native-text scan used to avoid unnecessary OCR/model work."""
+        configured_ocr = bool(
+            getattr(self.settings, "docling_do_ocr", True)
+        )
+        adaptive = bool(
+            getattr(self.settings, "docling_adaptive_ocr", True)
+        )
+        minimum_chars = max(
+            1,
+            int(
+                getattr(
+                    self.settings,
+                    "docling_native_text_min_chars",
+                    80,
+                )
+            ),
+        )
+        required_coverage = min(
+            1.0,
+            max(
+                0.0,
+                float(
+                    getattr(
+                        self.settings,
+                        "docling_native_text_coverage",
+                        0.98,
+                    )
+                ),
+            ),
+        )
+        max_empty_pages = max(
+            0,
+            int(
+                getattr(
+                    self.settings,
+                    "docling_native_text_max_empty_pages",
+                    2,
+                )
+            ),
+        )
+        page_count = 0
+        native_pages = 0
+        empty_pages = 0
+        table_candidate_pages = 0
+        try:
+            import fitz
+
+            with fitz.open(pdf_path) as document:
+                page_count = len(document)
+                for page in document:
+                    text = page.get_text("text") or ""
+                    character_count = len(re.sub(r"\s+", "", text))
+                    if character_count >= minimum_chars:
+                        native_pages += 1
+                    else:
+                        empty_pages += 1
+                    table_like = any(
+                        (
+                            len(re.findall(r"[-+]?\d[\d,.]*", line)) >= 2
+                            and (
+                                "\t" in line
+                                or bool(re.search(r"\S+\s{2,}\S+", line))
+                            )
+                        )
+                        for line in text.splitlines()
+                    )
+                    if table_like:
+                        table_candidate_pages += 1
+        except Exception as exc:
+            return {
+                "page_count": 0,
+                "native_text_pages": 0,
+                "empty_pages": 0,
+                "native_text_coverage": 0.0,
+                "table_candidate_pages": 0,
+                "effective_do_ocr": configured_ocr,
+                "reason": f"preflight_failed:{exc}",
+            }
+
+        coverage = native_pages / max(1, page_count)
+        can_skip_ocr = (
+            adaptive
+            and coverage >= required_coverage
+            and empty_pages <= max_empty_pages
+        )
+        return {
+            "page_count": page_count,
+            "native_text_pages": native_pages,
+            "empty_pages": empty_pages,
+            "native_text_coverage": round(coverage, 6),
+            "table_candidate_pages": table_candidate_pages,
+            "effective_do_ocr": configured_ocr and not can_skip_ocr,
+            "reason": (
+                "native_text_complete"
+                if configured_ocr and can_skip_ocr
+                else "ocr_required"
+                if configured_ocr
+                else "ocr_disabled"
+            ),
+        }
+
+    def _effective_table_mode(self, preflight: dict[str, Any]) -> str:
+        configured = str(
+            getattr(self.settings, "docling_table_mode", "accurate")
+        ).lower()
+        fast_max_pages = max(
+            0,
+            int(
+                getattr(
+                    self.settings,
+                    "docling_fast_table_max_pages",
+                    20,
+                )
+            ),
+        )
+        page_count = int(preflight.get("page_count", 0) or 0)
+        if configured == "accurate" and 0 < page_count <= fast_max_pages:
+            return "fast"
+        return configured
+
+    def _converter_key(
+        self,
+        *,
+        effective_do_ocr: bool,
+        effective_table_mode: str,
+        safe_batches: bool,
+    ) -> tuple[Any, ...]:
+        return (
+            effective_do_ocr,
+            effective_table_mode,
+            safe_batches,
+            json.dumps(self.cache_signature(), sort_keys=True),
+        )
+
+    def _get_converter(
+        self,
+        *,
+        effective_do_ocr: bool,
+        effective_table_mode: str,
+        safe_batches: bool,
+    ):
         _configure_windows_huggingface_cache()
         try:
             from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.settings import settings as docling_settings
             from docling.document_converter import DocumentConverter, PdfFormatOption
         except ImportError as exc:
             raise RuntimeError(
                 "Docling is not installed. Run: pip install -r requirements.txt"
             ) from exc
 
-        # Docling's process-wide page batch controls how many PDF pages enter the
-        # threaded pipeline together. Keep it aligned with the low-memory stage
-        # batches so large reports do not accumulate native page buffers.
-        docling_settings.perf.page_batch_size = _positive_setting(
-            self.settings, "docling_page_batch_size", 1
+        key = self._converter_key(
+            effective_do_ocr=effective_do_ocr,
+            effective_table_mode=effective_table_mode,
+            safe_batches=safe_batches,
         )
+        existing = self._converters.get(key)
+        if existing is not None:
+            self._converters.move_to_end(key)
+            return existing
         converter = DocumentConverter(
             allowed_formats=[InputFormat.PDF],
             format_options={
                 InputFormat.PDF: PdfFormatOption(
-                    pipeline_options=self._pipeline_options()
+                    pipeline_options=self._pipeline_options(
+                        effective_do_ocr=effective_do_ocr,
+                        effective_table_mode=effective_table_mode,
+                        safe_batches=safe_batches,
+                    )
                 )
             },
         )
-        return converter.convert(
-            pdf_path,
-            raises_on_error=False,
-            max_num_pages=int(getattr(self.settings, "docling_max_pages", 1000)),
-            max_file_size=int(
-                getattr(self.settings, "docling_max_file_mb", 2048) * 1024 * 1024
+        self._converters[key] = converter
+        cache_size = max(
+            1,
+            int(
+                getattr(
+                    self.settings,
+                    "docling_converter_cache_size",
+                    2,
+                )
             ),
         )
+        while len(self._converters) > cache_size:
+            _, evicted = self._converters.popitem(last=False)
+            del evicted
+            gc.collect()
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
+        return converter
+
+    @staticmethod
+    def _conversion_memory_failure(conversion: Any) -> bool:
+        markers = (
+            "std::bad_alloc",
+            "out of memory",
+            "page backend was unloaded",
+            "assertionerror",
+        )
+        errors = getattr(conversion, "errors", None) or []
+        text = " ".join(str(error).lower() for error in errors)
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _is_memory_exception(exc: Exception) -> bool:
+        text = f"{type(exc).__name__}: {exc}".lower()
+        return any(
+            marker in text
+            for marker in (
+                "memoryerror",
+                "std::bad_alloc",
+                "out of memory",
+                "native-memory failure",
+                "page backend was unloaded",
+                "assertionerror",
+            )
+        )
+
+    def _release_failed_converter(self, converter: Any) -> None:
+        for key, value in list(self._converters.items()):
+            if value is converter:
+                self._converters.pop(key, None)
+        del converter
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
+    def _convert_local(self, pdf_path: Path):
+        from docling.datamodel.settings import settings as docling_settings
+
+        preflight = self._preflight_pdf(pdf_path)
+        effective_do_ocr = bool(preflight["effective_do_ocr"])
+        effective_table_mode = self._effective_table_mode(preflight)
+        fallback_enabled = bool(
+            getattr(
+                self.settings,
+                "docling_batch_fallback_enabled",
+                True,
+            )
+        )
+        attempts = [self._safe_batch_mode]
+        if not self._safe_batch_mode and fallback_enabled:
+            attempts.append(True)
+        last_error: Exception | None = None
+        for safe_batches in attempts:
+            page_batch_size = (
+                _positive_setting(
+                    self.settings, "docling_safe_batch_size", 1
+                )
+                if safe_batches
+                else _positive_setting(
+                    self.settings, "docling_page_batch_size", 1
+                )
+            )
+            docling_settings.perf.page_batch_size = page_batch_size
+            converter_key = self._converter_key(
+                effective_do_ocr=effective_do_ocr,
+                effective_table_mode=effective_table_mode,
+                safe_batches=safe_batches,
+            )
+            converter_reused = converter_key in self._converters
+            converter = self._get_converter(
+                effective_do_ocr=effective_do_ocr,
+                effective_table_mode=effective_table_mode,
+                safe_batches=safe_batches,
+            )
+            try:
+                conversion = converter.convert(
+                    pdf_path,
+                    raises_on_error=False,
+                    max_num_pages=int(
+                        getattr(self.settings, "docling_max_pages", 1000)
+                    ),
+                    max_file_size=int(
+                        getattr(self.settings, "docling_max_file_mb", 2048)
+                        * 1024
+                        * 1024
+                    ),
+                )
+                if self._conversion_memory_failure(conversion):
+                    raise RuntimeError(
+                        "Docling conversion reported a native-memory failure."
+                    )
+                runtime = {
+                    "preflight": preflight,
+                    "effective_do_ocr": effective_do_ocr,
+                    "effective_table_mode": effective_table_mode,
+                    "page_batch_size": page_batch_size,
+                    "safe_batch_fallback_used": safe_batches,
+                    "converter_reused": converter_reused,
+                }
+                if safe_batches:
+                    self._safe_batch_mode = True
+                return conversion, runtime
+            except Exception as exc:
+                last_error = exc
+                self._release_failed_converter(converter)
+                if safe_batches or not fallback_enabled or not self._is_memory_exception(
+                    exc
+                ):
+                    raise
+                self._safe_batch_mode = True
+        assert last_error is not None
+        raise last_error
 
     def _convert_service(self, pdf_path: Path):
         endpoint = str(getattr(self.settings, "docling_serve_url", "") or "").rstrip("/")
@@ -323,7 +682,16 @@ class DoclingParser:
             status=payload.get("status", "success"),
             errors=payload.get("errors", []),
             processing_time=payload.get("processing_time", 0.0),
-        )
+        ), {
+            "preflight": {},
+            "effective_do_ocr": bool(
+                getattr(self.settings, "docling_do_ocr", True)
+            ),
+            "effective_table_mode": str(
+                getattr(self.settings, "docling_table_mode", "accurate")
+            ),
+            "service": True,
+        }
 
     def parse(
         self,
@@ -336,9 +704,9 @@ class DoclingParser:
         mode = str(getattr(self.settings, "docling_execution_mode", "local")).lower()
         started = time.perf_counter()
         if mode == "local":
-            conversion = self._convert_local(pdf_path)
+            conversion, runtime = self._convert_local(pdf_path)
         elif mode == "serve":
-            conversion = self._convert_service(pdf_path)
+            conversion, runtime = self._convert_service(pdf_path)
         else:
             raise ValueError(
                 f"DOCLING_EXECUTION_MODE must be 'local' or 'serve', got {mode!r}"
@@ -408,6 +776,25 @@ class DoclingParser:
             ),
             pipeline_options=self.cache_signature(),
         )
+        metadata_payload = metadata.model_dump()
+        metadata_payload["runtime"] = runtime
+        profiling_path = None
+        if bool(getattr(self.settings, "docling_profiling", True)):
+            timings = _jsonable(getattr(conversion, "timings", {}) or {})
+            profiling_path = report_dir / "profiling.json"
+            profiling_path.write_text(
+                json.dumps(
+                    {
+                        "duration_ms": duration_ms,
+                        "timings": timings,
+                        "runtime": runtime,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                    default=str,
+                ),
+                encoding="utf-8",
+            )
         result = ParserResult(
             source_file=source_file,
             parser=self.parser_name,
@@ -416,6 +803,11 @@ class DoclingParser:
             elements=elements,
             artifact_paths={
                 "document_json": str(document_json),
+                **(
+                    {"profiling": str(profiling_path)}
+                    if profiling_path is not None
+                    else {}
+                ),
                 **(
                     {"document_markdown": str(report_dir / "document.md")}
                     if markdown
@@ -426,7 +818,7 @@ class DoclingParser:
             duration_ms=duration_ms,
             errors=conversion_errors,
             quality=quality,
-            metadata=metadata.model_dump(),
+            metadata=metadata_payload,
         )
         (report_dir / "quality.json").write_text(
             result.quality.model_dump_json(indent=2), encoding="utf-8"

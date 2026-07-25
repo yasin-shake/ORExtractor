@@ -1,6 +1,7 @@
 """Pipeline wiring tests with a mocked parser router and Bedrock."""
 
 from pathlib import Path
+import threading
 from unittest.mock import MagicMock, patch
 
 from ingestion.chunking import elements_to_documents
@@ -12,6 +13,7 @@ from ingestion.models import (
 )
 from ingestion.pipeline import (
     IngestionPipeline,
+    _ReportWork,
     _delete_document_ids,
     _source_document_ids,
 )
@@ -198,4 +200,92 @@ def test_ingest_all_discovers_nested_pdfs_with_relative_source_ids(tmp_path):
     nested_call = pipeline.ingest_pdf.call_args_list[0]
     assert nested_call.kwargs["artifact_dir"] == (
         settings.artifact_dir / "region" / "year" / "report"
+    )
+
+
+def test_bounded_pipeline_uses_separate_enrich_and_index_workers(tmp_path):
+    settings = _Settings()
+    settings.knowledge_dir = tmp_path / "knowledge"
+    settings.extra_pdf_dirs = []
+    settings.chroma_dir = tmp_path / "chroma"
+    settings.artifact_dir = tmp_path / "artifacts"
+    settings.extracted_dir = tmp_path / "extracted"
+    settings.ingestion_pipeline_enabled = True
+    settings.ingestion_pipeline_queue_size = 2
+    settings.resolved_embedding_provider = "qwen"
+    settings.resolved_embedding_signature = {
+        "provider": "qwen",
+        "model": "test",
+        "dimensions": 3,
+    }
+    settings.knowledge_dir.mkdir()
+    for index in range(3):
+        (settings.knowledge_dir / f"r{index}.pdf").write_bytes(
+            b"%PDF staged"
+        )
+
+    pipeline = IngestionPipeline(settings, enable_visuals=False)
+    stage_threads = {"parse": [], "enrich": [], "index": []}
+
+    def fake_parse(path, *, source_file, artifact_dir, tracing):
+        stage_threads["parse"].append(threading.current_thread().name)
+        return _ReportWork(
+            pdf_path=path,
+            source_file=source_file,
+            artifact_dir=artifact_dir,
+            parser_result=ParserResult(
+                source_file=source_file,
+                parser="docling",
+                parser_version="test",
+                elements=[
+                    ElementRecord(
+                        element_id=f"{source_file}-1",
+                        source_file=source_file,
+                        category="NarrativeText",
+                        text="Body",
+                    )
+                ],
+                quality=ParserQualityReport(score=1.0),
+            ),
+            elements=[
+                ElementRecord(
+                    element_id=f"{source_file}-1",
+                    source_file=source_file,
+                    category="NarrativeText",
+                    text="Body",
+                )
+            ],
+        )
+
+    def fake_prepare(work, **_kwargs):
+        stage_threads["enrich"].append(threading.current_thread().name)
+        return work
+
+    def fake_index(future, **_kwargs):
+        stage_threads["index"].append(threading.current_thread().name)
+        work = future.result()
+        return (
+            ReportIngestStats(filename=work.source_file),
+            work,
+        )
+
+    pipeline._parse_report = fake_parse
+    pipeline._prepare_report = fake_prepare
+    pipeline._index_after_prepare = fake_index
+
+    with (
+        patch("rag_app.get_embedder", return_value=MagicMock()),
+        patch("rag_app.get_vectorstore", return_value=MagicMock()),
+    ):
+        result = pipeline.ingest_all()
+
+    assert result.files == ["r0.pdf", "r1.pdf", "r2.pdf"]
+    assert all(name == "MainThread" for name in stage_threads["parse"])
+    assert all(
+        name.startswith("orextractor-enrich")
+        for name in stage_threads["enrich"]
+    )
+    assert all(
+        name.startswith("orextractor-index")
+        for name in stage_threads["index"]
     )

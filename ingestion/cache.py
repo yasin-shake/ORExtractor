@@ -73,6 +73,44 @@ def parser_policy_signature(settings) -> dict:
             "generate_picture_images": getattr(
                 settings, "docling_generate_picture_images", True
             ),
+            "images_scale": getattr(
+                settings, "docling_images_scale", 1.0
+            ),
+            "ocr_backend": getattr(
+                settings, "docling_ocr_backend", "onnxruntime"
+            ),
+            "ocr_languages": getattr(
+                settings, "docling_ocr_languages", "english"
+            ),
+            "adaptive_ocr": getattr(
+                settings, "docling_adaptive_ocr", True
+            ),
+            "native_text_min_chars": getattr(
+                settings, "docling_native_text_min_chars", 80
+            ),
+            "native_text_coverage": getattr(
+                settings, "docling_native_text_coverage", 0.98
+            ),
+            "native_text_max_empty_pages": getattr(
+                settings,
+                "docling_native_text_max_empty_pages",
+                2,
+            ),
+            "ocr_batch_size": getattr(
+                settings, "docling_ocr_batch_size", 2
+            ),
+            "layout_batch_size": getattr(
+                settings, "docling_layout_batch_size", 2
+            ),
+            "table_batch_size": getattr(
+                settings, "docling_table_batch_size", 1
+            ),
+            "page_batch_size": getattr(
+                settings, "docling_page_batch_size", 2
+            ),
+            "fast_table_max_pages": getattr(
+                settings, "docling_fast_table_max_pages", 20
+            ),
             "model_artifact_revision": getattr(
                 settings, "docling_model_artifact_revision", ""
             ),
@@ -268,7 +306,13 @@ def should_skip_pdf(entry: Any, pdf_path: Path, settings) -> bool:
         return False
     if entry.get("visual_model_id") != settings.bedrock_visual_model_id:
         return False
-    if entry.get("visual_enrichment_enabled", True) is not True:
+    if entry.get("visual_enrichment_enabled", True) is not bool(
+        getattr(
+            settings,
+            "resolved_visual_enrichment_enabled",
+            True,
+        )
+    ):
         return False
     if entry.get("visual_confidence_threshold") != getattr(
         settings, "bedrock_visual_confidence_threshold", 0.85
@@ -281,6 +325,33 @@ def should_skip_pdf(entry: Any, pdf_path: Path, settings) -> bool:
     if entry.get("visual_reconstruct_diagrams") != getattr(
         settings, "visual_reconstruct_diagrams", True
     ):
+        return False
+    if entry.get("visual_policy") != {
+        "max_calls": int(
+            getattr(settings, "visual_max_calls_per_report", 30)
+        ),
+        "max_table_calls": int(
+            getattr(
+                settings,
+                "visual_max_table_calls_per_report",
+                20,
+            )
+        ),
+        "max_figure_calls": int(
+            getattr(
+                settings,
+                "visual_max_figure_calls_per_report",
+                10,
+            )
+        ),
+        "token_budget": int(
+            getattr(
+                settings,
+                "visual_token_budget_per_report",
+                350000,
+            )
+        ),
+    }:
         return False
     if entry.get("chunk_size") != settings.chunk_size:
         return False
@@ -325,6 +396,32 @@ def build_manifest_entry(
         "visual_reconstruct_diagrams": getattr(
             settings, "visual_reconstruct_diagrams", True
         ),
+        "visual_policy": {
+            "max_calls": int(
+                getattr(settings, "visual_max_calls_per_report", 30)
+            ),
+            "max_table_calls": int(
+                getattr(
+                    settings,
+                    "visual_max_table_calls_per_report",
+                    20,
+                )
+            ),
+            "max_figure_calls": int(
+                getattr(
+                    settings,
+                    "visual_max_figure_calls_per_report",
+                    10,
+                )
+            ),
+            "token_budget": int(
+                getattr(
+                    settings,
+                    "visual_token_budget_per_report",
+                    350000,
+                )
+            ),
+        },
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
         "embedding_model": settings.embed_model,
@@ -354,6 +451,9 @@ def build_manifest_entry(
             "fallback_used": parser_result.fallback.used,
             "fallback_reason_codes": parser_result.fallback.reasons,
             "parser_quality": parser_result.quality.model_dump(mode="json"),
+            "parser_runtime": dict(
+                parser_result.metadata.get("runtime", {})
+            ),
         }
     )
     return entry
