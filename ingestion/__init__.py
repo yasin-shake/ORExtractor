@@ -1,4 +1,4 @@
-"""Unstructured + Bedrock visual ingestion pipeline for ORExtractor."""
+"""Docling, MinerU, and Bedrock visual ingestion for ORExtractor."""
 
 from ingestion.pipeline import IngestionPipeline, PIPELINE_VERSION
 

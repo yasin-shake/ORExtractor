@@ -255,22 +255,40 @@ def main() -> int:
 
     from dotenv import load_dotenv
     load_dotenv()
-    from rag_app import load_settings, iter_pdf_paths
+    from rag_app import (
+        iter_pdf_paths,
+        filesystem_path,
+        load_settings,
+        pdf_source_id,
+        source_output_path,
+    )
 
     settings = load_settings()
-    stem = Path(args.filename).stem
-    spatial_path = settings.spatial_dir / f"{stem}.json"
+    spatial_path = source_output_path(settings.spatial_dir, args.filename, ".json")
     if not spatial_path.exists():
         print(f"No spatial extraction at {spatial_path} — run: python rag_app.py extract --spatial --file {args.filename}")
         return 1
 
     pdf_path = next(
-        (p for p in iter_pdf_paths(settings.knowledge_dir, settings.extra_pdf_dirs) if p.name == args.filename),
+        (
+            p
+            for p in iter_pdf_paths(
+                settings.knowledge_dir,
+                settings.extra_pdf_dirs,
+            )
+            if pdf_source_id(
+                p,
+                settings.knowledge_dir,
+                settings.extra_pdf_dirs,
+            )
+            == args.filename.replace("\\", "/")
+        ),
         None,
     )
     if pdf_path is None:
         print(f"PDF {args.filename!r} not found in knowledge directories.")
         return 1
+    pdf_path = filesystem_path(pdf_path)
 
     captions: dict = {}
     if args.pages:
@@ -287,7 +305,11 @@ def main() -> int:
             print("No section-like captions found — pass explicit pages with --pages.")
             return 1
 
-    sections_dir = settings.spatial_dir / f"{stem}_sections"
+    sections_dir = source_output_path(
+        settings.spatial_dir,
+        args.filename,
+        "_sections",
+    )
     rendered = render_pages(pdf_path, pages, sections_dir, args.dpi)
     print(f"{len(rendered)} section image(s) in {sections_dir}")
     if args.render_only:

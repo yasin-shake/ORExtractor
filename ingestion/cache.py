@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any, Optional  # noqa: F401 — Any used in should_skip_pdf
 
 from ingestion.models import (
-    PARTITIONER_VERSION,
+    NORMALIZER_VERSION,
     PIPELINE_VERSION,
     VISUAL_PROMPT_VERSION,
     VISUAL_SCHEMA_VERSION,
     ElementRecord,
+    ParserResult,
 )
 
 
@@ -37,75 +38,118 @@ def cache_key(*parts: str) -> str:
     return _sha256_text("|".join(parts))
 
 
-def runtime_partitioner_version() -> str:
-    """Include the installed parser version in cache and manifest invalidation."""
+def runtime_package_version(package: str) -> str:
     try:
-        package_version = importlib.metadata.version("unstructured")
+        return importlib.metadata.version(package)
     except importlib.metadata.PackageNotFoundError:
-        package_version = "not-installed"
-    return f"{PARTITIONER_VERSION}:unstructured={package_version}"
+        return "not-installed"
 
 
-def _partition_signature(pdf_path: Path, settings, partitioner) -> dict:
+def parser_policy_signature(settings) -> dict:
+    """Configuration and package revisions that affect parser selection."""
+    primary = str(
+        getattr(settings, "force_parser", "")
+        or getattr(settings, "parser_primary", "")
+        or getattr(settings, "ingestion_backend", "docling")
+    ).lower()
     return {
-        "source_sha256": file_sha256(pdf_path),
-        "partitioner": getattr(partitioner, "provider_name", "unstructured-local"),
-        "partitioner_version": getattr(
-            partitioner, "version", runtime_partitioner_version()
+        "primary": primary,
+        "fallback": str(getattr(settings, "parser_fallback", "mineru") or ""),
+        "fallback_enabled": bool(
+            getattr(settings, "parser_fallback_enabled", True)
         ),
-        "partition_strategy": getattr(
-            partitioner,
-            "strategy",
-            getattr(settings, "unstructured_strategy", "hi_res"),
-        ),
+        "docling_version": runtime_package_version("docling"),
+        "mineru_version": runtime_package_version("mineru"),
+        "normalizer_version": NORMALIZER_VERSION,
+        "docling_options": {
+            "do_ocr": getattr(settings, "docling_do_ocr", True),
+            "do_table_structure": getattr(
+                settings, "docling_do_table_structure", True
+            ),
+            "table_mode": getattr(settings, "docling_table_mode", "accurate"),
+            "generate_page_images": getattr(
+                settings, "docling_generate_page_images", True
+            ),
+            "generate_picture_images": getattr(
+                settings, "docling_generate_picture_images", True
+            ),
+            "model_artifact_revision": getattr(
+                settings, "docling_model_artifact_revision", ""
+            ),
+        },
+        "quality_policy": {
+            "min_text_page_coverage": getattr(
+                settings, "parser_min_text_page_coverage", 0.90
+            ),
+            "max_empty_page_ratio": getattr(
+                settings, "parser_max_empty_page_ratio", 0.10
+            ),
+            "max_replacement_char_ratio": getattr(
+                settings, "parser_max_replacement_char_ratio", 0.01
+            ),
+            "min_table_valid_ratio": getattr(
+                settings, "parser_min_table_valid_ratio", 0.80
+            ),
+            "require_picture_crops": getattr(
+                settings, "parser_require_picture_crops", False
+            ),
+        },
     }
 
 
-def load_partition_cache(
+def _parser_signature(pdf_path: Path, parser) -> dict:
+    signature = {
+        "source_sha256": file_sha256(pdf_path),
+    }
+    cache_signature = getattr(parser, "cache_signature", None)
+    if callable(cache_signature):
+        candidate = cache_signature()
+        if isinstance(candidate, dict):
+            signature["parser_signature"] = candidate
+    return signature
+
+
+def load_parser_cache(
     artifact_dir: Path,
     pdf_path: Path,
     settings,
-    partitioner,
-) -> Optional[list[ElementRecord]]:
-    """Load normalized elements when source and partition configuration match."""
-    meta_path = artifact_dir / "partition_cache.json"
-    elements_path = artifact_dir / "normalized_elements.json"
-    if not meta_path.exists() or not elements_path.exists():
+    parser,
+) -> Optional[ParserResult]:
+    """Load a full routed parser result when its source/configuration matches."""
+    meta_path = artifact_dir / "parser_cache.json"
+    result_path = artifact_dir / "parser_result.json"
+    if not meta_path.exists() or not result_path.exists():
         return None
     try:
-        if json.loads(meta_path.read_text(encoding="utf-8")) != _partition_signature(
-            pdf_path, settings, partitioner
+        if json.loads(meta_path.read_text(encoding="utf-8")) != _parser_signature(
+            pdf_path, parser
         ):
             return None
-        payload = json.loads(elements_path.read_text(encoding="utf-8"))
-        elements = [ElementRecord.model_validate(item) for item in payload]
-        for element in elements:
+        result = ParserResult.model_validate_json(
+            result_path.read_text(encoding="utf-8")
+        )
+        for element in result.elements:
             if element.image_path and not Path(element.image_path).exists():
                 return None
-        return elements
+        return result
     except Exception:
         return None
 
 
-def save_partition_cache(
+def save_parser_cache(
     artifact_dir: Path,
     pdf_path: Path,
     settings,
-    partitioner,
-    elements: list[ElementRecord],
+    parser,
+    result: ParserResult,
 ) -> None:
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    (artifact_dir / "normalized_elements.json").write_text(
-        json.dumps(
-            [element.model_dump(mode="json") for element in elements],
-            indent=2,
-            ensure_ascii=True,
-        ),
-        encoding="utf-8",
+    (artifact_dir / "parser_result.json").write_text(
+        result.model_dump_json(indent=2), encoding="utf-8"
     )
-    (artifact_dir / "partition_cache.json").write_text(
+    (artifact_dir / "parser_cache.json").write_text(
         json.dumps(
-            _partition_signature(pdf_path, settings, partitioner),
+            _parser_signature(pdf_path, parser),
             indent=2,
             sort_keys=True,
         ),
@@ -130,7 +174,7 @@ class EnrichmentCache:
             model_id,
             VISUAL_PROMPT_VERSION,
             VISUAL_SCHEMA_VERSION,
-            runtime_partitioner_version(),
+            f"{el.parser or 'unknown'}:{el.parser_version}",
             PIPELINE_VERSION,
         )
 
@@ -159,7 +203,7 @@ class EnrichmentCache:
             model_id,
             VISUAL_PROMPT_VERSION,
             VISUAL_SCHEMA_VERSION,
-            runtime_partitioner_version(),
+            f"{el.parser or 'unknown'}:{el.parser_version}",
             PIPELINE_VERSION,
         )
 
@@ -206,31 +250,23 @@ def should_skip_pdf(entry: Any, pdf_path: Path, settings) -> bool:
     """Return True if this PDF can be skipped given current pipeline versions."""
     if entry is None:
         return False
-    # Legacy string fingerprint
+    # Legacy fingerprints do not identify their vector space, so they cannot
+    # safely skip ingestion after embedding-provider changes.
     if isinstance(entry, str):
-        return entry == fingerprint_legacy(pdf_path)
+        return False
     if not isinstance(entry, dict):
         return False
     if entry.get("source_sha256") != file_sha256(pdf_path):
         return False
-    expected_provider = (
-        f"unstructured-{getattr(settings, 'unstructured_provider', 'local')}"
-    )
-    if entry.get("partitioner") != expected_provider:
+    if entry.get("parser_policy") != parser_policy_signature(settings):
         return False
     if entry.get("pipeline_version") != PIPELINE_VERSION:
-        return False
-    if entry.get("partitioner_version") != runtime_partitioner_version():
         return False
     if entry.get("visual_prompt_version") != VISUAL_PROMPT_VERSION:
         return False
     if entry.get("visual_schema_version") != VISUAL_SCHEMA_VERSION:
         return False
     if entry.get("visual_model_id") != settings.bedrock_visual_model_id:
-        return False
-    if entry.get("partition_strategy") != getattr(
-        settings, "unstructured_strategy", "hi_res"
-    ):
         return False
     if entry.get("visual_enrichment_enabled", True) is not True:
         return False
@@ -250,7 +286,12 @@ def should_skip_pdf(entry: Any, pdf_path: Path, settings) -> bool:
         return False
     if entry.get("chunk_overlap") != settings.chunk_overlap:
         return False
-    if entry.get("embedding_model") != settings.embed_model:
+    resolved_signature = getattr(
+        settings, "resolved_embedding_signature", None
+    )
+    if not isinstance(resolved_signature, dict):
+        return False
+    if entry.get("embedding_signature") != resolved_signature:
         return False
     return True
 
@@ -264,17 +305,13 @@ def build_manifest_entry(
     table_count: int,
     indexed_chunk_count: int,
     failed_element_ids: list[str],
-    partitioner: str,
-    partition_strategy: str,
     visual_enrichment_enabled: bool = True,
+    parser_result: ParserResult,
 ) -> dict:
-    return {
+    entry = {
         "source_sha256": file_sha256(pdf_path),
         "fingerprint": fingerprint_legacy(pdf_path),
         "pipeline_version": PIPELINE_VERSION,
-        "partitioner": partitioner,
-        "partitioner_version": runtime_partitioner_version(),
-        "partition_strategy": partition_strategy,
         "visual_model_id": settings.bedrock_visual_model_id,
         "visual_prompt_version": VISUAL_PROMPT_VERSION,
         "visual_schema_version": VISUAL_SCHEMA_VERSION,
@@ -291,9 +328,32 @@ def build_manifest_entry(
         "chunk_size": settings.chunk_size,
         "chunk_overlap": settings.chunk_overlap,
         "embedding_model": settings.embed_model,
+        "embedding_signature": dict(
+            getattr(settings, "resolved_embedding_signature", {})
+        ),
         "element_count": element_count,
         "visual_count": visual_count,
         "table_count": table_count,
         "indexed_chunk_count": indexed_chunk_count,
         "failed_element_ids": failed_element_ids,
     }
+    entry.update(
+        {
+            "parser_policy": parser_policy_signature(settings),
+            "primary_parser": parser_result.metadata.get(
+                "primary_parser", parser_result.parser
+            ),
+            "primary_parser_version": parser_result.metadata.get(
+                "primary_parser_version", parser_result.parser_version
+            ),
+            "selected_parser": parser_result.parser,
+            "selected_parser_version": parser_result.parser_version,
+            "fallback_enabled": bool(
+                getattr(settings, "parser_fallback_enabled", True)
+            ),
+            "fallback_used": parser_result.fallback.used,
+            "fallback_reason_codes": parser_result.fallback.reasons,
+            "parser_quality": parser_result.quality.model_dump(mode="json"),
+        }
+    )
+    return entry

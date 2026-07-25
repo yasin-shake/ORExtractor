@@ -27,7 +27,15 @@ def chroma_info():
     return {
         "collection_name": settings.collection_name,
         "persist_directory": str(settings.chroma_dir),
-        "embedding_model": settings.embed_model,
+        "embedding_provider": getattr(
+            settings, "resolved_embedding_provider", settings.embedding_provider
+        ),
+        "embedding_model": getattr(
+            settings, "resolved_embedding_model", settings.embed_model
+        ),
+        "embedding_signature": getattr(
+            settings, "resolved_embedding_signature", None
+        ),
         "vector_count": count,
     }
 

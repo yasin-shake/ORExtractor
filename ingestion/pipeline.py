@@ -1,4 +1,4 @@
-"""Deterministic Unstructured + Bedrock visual ingestion pipeline."""
+"""Deterministic Docling/MinerU + Bedrock visual ingestion pipeline."""
 
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ from ingestion.cache import (
     build_manifest_entry,
     file_sha256,
     load_ingest_manifest,
-    load_partition_cache,
+    load_parser_cache,
     save_ingest_manifest,
-    save_partition_cache,
+    save_parser_cache,
     should_skip_pdf,
 )
 from ingestion.chunking import elements_to_documents
@@ -30,7 +30,7 @@ from ingestion.models import (
     IngestionResult,
     ReportIngestStats,
 )
-from ingestion.partitioners import get_partitioner
+from ingestion.parsers.router import get_parser_router
 from ingestion.telemetry import configure_langsmith, stage_span
 from ingestion.visuals import reconstruct_visuals
 
@@ -65,7 +65,7 @@ class IngestionPipeline:
         self.settings = settings
         self.enable_visuals = enable_visuals and getattr(settings, "visual_enrichment_enabled", True)
         self.partition_only = partition_only
-        self.partitioner = get_partitioner(settings)
+        self.parser_router = get_parser_router(settings)
         configure_langsmith(settings)
 
     def ingest_all(
@@ -77,12 +77,68 @@ class IngestionPipeline:
         from rag_app import (
             get_embedder,
             get_vectorstore,
+            filesystem_path,
             iter_pdf_paths,
+            pdf_source_id,
+            source_output_path,
         )
 
         t_total = time.perf_counter()
+        pdf_paths = list(iter_pdf_paths(self.settings.knowledge_dir, self.settings.extra_pdf_dirs))
+        discovered = [
+            (
+                path,
+                pdf_source_id(
+                    path,
+                    self.settings.knowledge_dir,
+                    self.settings.extra_pdf_dirs,
+                ),
+            )
+            for path in pdf_paths
+        ]
+        source_ids: dict[str, Path] = {}
+        for path, source_file in discovered:
+            key = source_file.casefold()
+            previous = source_ids.get(key)
+            if previous is not None and previous.resolve() != path.resolve():
+                raise ValueError(
+                    f"Duplicate PDF source path {source_file!r}: "
+                    f"{previous} and {path}. Configure non-overlapping PDF roots."
+                )
+            source_ids[key] = path
+
+        if only_file:
+            requested = str(only_file).replace("\\", "/").casefold()
+            matches = [
+                item
+                for item in discovered
+                if item[1].casefold() == requested
+            ]
+            if not matches:
+                matches = [
+                    item
+                    for item in discovered
+                    if item[0].name.casefold() == Path(only_file).name.casefold()
+                    or item[0].stem.casefold() == Path(only_file).stem.casefold()
+                ]
+            if len(matches) > 1:
+                choices = ", ".join(source_file for _, source_file in matches)
+                raise ValueError(
+                    f"PDF name {only_file!r} is ambiguous. Use one of these relative "
+                    f"paths with --file: {choices}"
+                )
+            discovered = matches
+
+        if not discovered:
+            dirs = [self.settings.knowledge_dir] + list(self.settings.extra_pdf_dirs)
+            print(f"No PDFs found in {', '.join(str(d) for d in dirs)}")
+            return IngestionResult(status="completed", files=[])
+
         vectorstore = None
         if not self.partition_only:
+            # Resolve and health-check the complete embedding backend before a
+            # requested rebuild deletes the existing collection.
+            embedder = get_embedder(self.settings)
             chroma_client = chromadb.PersistentClient(path=str(self.settings.chroma_dir))
             if rebuild:
                 try:
@@ -91,67 +147,62 @@ class IngestionPipeline:
                 except Exception as exc:
                     print(f"Warning: could not delete collection '{self.settings.collection_name}': {exc}")
 
-            embedder = get_embedder(self.settings)
             vectorstore = get_vectorstore(self.settings, embedder)
-
-        pdf_paths = list(iter_pdf_paths(self.settings.knowledge_dir, self.settings.extra_pdf_dirs))
-        if only_file:
-            pdf_paths = [p for p in pdf_paths if p.name == only_file]
-            if not pdf_paths:
-                # Also allow bare stem match
-                pdf_paths = [
-                    p
-                    for p in iter_pdf_paths(self.settings.knowledge_dir, self.settings.extra_pdf_dirs)
-                    if p.name == only_file or p.stem == Path(only_file).stem
-                ]
-        if not pdf_paths:
-            dirs = [self.settings.knowledge_dir] + list(self.settings.extra_pdf_dirs)
-            print(f"No PDFs found in {', '.join(str(d) for d in dirs)}")
-            return IngestionResult(status="completed", files=[])
 
         manifest = {} if rebuild else load_ingest_manifest(self.settings.chroma_dir)
         result = IngestionResult(status="completed", files=[])
         metrics = IngestionMetrics()
         tracing = bool(getattr(self.settings, "langsmith_tracing", False))
 
-        pdf_bar = tqdm(pdf_paths, desc="Ingesting PDFs (unstructured)", unit="pdf", dynamic_ncols=True)
-        for pdf_path in pdf_bar:
-            pdf_bar.set_postfix(file=pdf_path.name[:40])
-            entry = manifest.get(pdf_path.name)
-            if not rebuild and not reprocess_visuals and should_skip_pdf(entry, pdf_path, self.settings):
-                tqdm.write(f"\nSkipping {pdf_path.name} (unchanged since last ingest)")
+        pdf_bar = tqdm(discovered, desc="Ingesting PDFs (parser-routed)", unit="pdf", dynamic_ncols=True)
+        for pdf_path, source_file in pdf_bar:
+            pdf_bar.set_postfix(file=source_file[-40:])
+            entry = manifest.get(source_file)
+            input_path = filesystem_path(pdf_path)
+            if (
+                not self.partition_only
+                and not rebuild
+                and not reprocess_visuals
+                and should_skip_pdf(entry, input_path, self.settings)
+            ):
+                tqdm.write(f"\nSkipping {source_file} (unchanged since last ingest)")
                 continue
 
             try:
                 report_stats = self.ingest_pdf(
-                    pdf_path,
+                    input_path,
+                    source_file=source_file,
+                    artifact_dir=source_output_path(
+                        self.settings.artifact_dir,
+                        source_file,
+                        "",
+                    ),
                     vectorstore=vectorstore,
                     reprocess_visuals=reprocess_visuals,
                     metrics=metrics,
                     tracing=tracing,
                 )
                 result.reports.append(report_stats)
-                result.files.append(pdf_path.name)
+                result.files.append(source_file)
                 result.errors.extend(getattr(self, "_last_report_errors", []))
                 if not self.partition_only:
-                    manifest[pdf_path.name] = build_manifest_entry(
-                        pdf_path,
+                    manifest[source_file] = build_manifest_entry(
+                        input_path,
                         self.settings,
                         element_count=report_stats.elements,
                         visual_count=report_stats.figures,
                         table_count=report_stats.tables,
                         indexed_chunk_count=report_stats.indexed_chunks,
                         failed_element_ids=report_stats.failed_elements,
-                        partitioner=getattr(self.partitioner, "provider_name", "unstructured-local"),
-                        partition_strategy=getattr(self.settings, "unstructured_strategy", "hi_res"),
                         visual_enrichment_enabled=self.enable_visuals,
+                        parser_result=self._last_parser_result,
                     )
                     save_ingest_manifest(self.settings.chroma_dir, manifest)
             except Exception as exc:
                 result.errors.append(
-                    IngestionError(element_id="", stage="ingest-pdf", message=f"{pdf_path.name}: {exc}")
+                    IngestionError(element_id="", stage="ingest-pdf", message=f"{source_file}: {exc}")
                 )
-                tqdm.write(f"\nFailed {pdf_path.name}: {exc}")
+                tqdm.write(f"\nFailed {source_file}: {exc}")
 
         metrics.total_ms = (time.perf_counter() - t_total) * 1000
         result.metrics = metrics
@@ -160,9 +211,10 @@ class IngestionPipeline:
                 "completed_with_errors" if result.reports else "failed"
             )
         print(
-            f"\nUnstructured ingestion complete. "
+            f"\nDocument ingestion complete. "
             f"{sum(r.indexed_chunks for r in result.reports)} chunks across "
-            f"{len(result.reports)} report(s) in '{self.settings.collection_name}'."
+            f"{len(result.reports)} report(s) in '{self.settings.collection_name}' "
+            f"using {getattr(self.settings, 'resolved_embedding_provider', 'unknown')}."
         )
         return result
 
@@ -170,6 +222,8 @@ class IngestionPipeline:
         self,
         pdf_path: Path,
         *,
+        source_file: Optional[str] = None,
+        artifact_dir: Optional[Path] = None,
         vectorstore=None,
         reprocess_visuals: bool = False,
         metrics: Optional[IngestionMetrics] = None,
@@ -179,40 +233,112 @@ class IngestionPipeline:
         from rag_app import _add_documents_with_retry, build_doc_id, get_embedder, get_vectorstore
 
         metrics = metrics or IngestionMetrics()
-        artifact_dir = Path(self.settings.artifact_dir) / pdf_path.stem
+        source_file = source_file or pdf_path.name
+        artifact_dir = artifact_dir or Path(self.settings.artifact_dir) / pdf_path.stem
         artifact_dir.mkdir(parents=True, exist_ok=True)
         cache = EnrichmentCache(artifact_dir / "cache")
         self._last_report_errors: List[IngestionError] = []
 
-        with stage_span("ingest-report", {"source": pdf_path.name}, enabled=tracing):
+        with stage_span("ingest-report", {"source": source_file}, enabled=tracing):
             t0 = time.perf_counter()
-            with stage_span("partition-pdf", {"source": pdf_path.name}, enabled=tracing):
-                elements = load_partition_cache(
+            with stage_span("parse-document", {"source": source_file}, enabled=tracing):
+                parser_result = load_parser_cache(
                     artifact_dir,
                     pdf_path,
                     self.settings,
-                    self.partitioner,
+                    self.parser_router,
                 )
-                partition_cache_hit = elements is not None
-                if elements is None:
-                    elements = self.partitioner.partition(pdf_path)
-                    save_partition_cache(
-                        artifact_dir,
+                partition_cache_hit = parser_result is not None
+                if parser_result is None:
+                    parser_result = self.parser_router.parse(
                         pdf_path,
-                        self.settings,
-                        self.partitioner,
-                        elements,
+                        source_file=source_file,
+                        artifact_dir=artifact_dir,
                     )
+                    partition_cache_hit = bool(
+                        parser_result.metadata.get("parser_cache_hit")
+                    )
+                    if partition_cache_hit:
+                        metrics.partition_cache_hits += 1
+                    if parser_result.elements:
+                        save_parser_cache(
+                            artifact_dir,
+                            pdf_path,
+                            self.settings,
+                            self.parser_router,
+                            parser_result,
+                        )
                 else:
                     metrics.partition_cache_hits += 1
+                elements = parser_result.elements
+                self._last_parser_result = parser_result
+                if not elements:
+                    details = "; ".join(parser_result.errors) or "no canonical elements"
+                    raise RuntimeError(
+                        f"{parser_result.parser} produced no usable elements: {details}"
+                    )
+                with stage_span(
+                    "assess-primary-quality",
+                    {
+                        "source": source_file,
+                        "score": parser_result.fallback.primary_score
+                        if parser_result.fallback.primary_score is not None
+                        else parser_result.quality.score,
+                        "reason_codes": parser_result.fallback.reasons,
+                    },
+                    enabled=tracing,
+                ):
+                    pass
+                with stage_span(
+                    "decide-fallback",
+                    {
+                        "attempted": parser_result.fallback.attempted,
+                        "used": parser_result.fallback.used,
+                        "reason_codes": parser_result.fallback.reasons,
+                    },
+                    enabled=tracing,
+                ):
+                    pass
+                if parser_result.fallback.attempted:
+                    with stage_span(
+                        "parse-fallback-mineru",
+                        {
+                            "duration_ms": parser_result.metadata.get(
+                                "fallback_duration_ms", 0.0
+                            )
+                        },
+                        enabled=tracing,
+                    ):
+                        pass
+                with stage_span(
+                    "select-parser-result",
+                    {
+                        "selected_parser": parser_result.parser,
+                        "quality_score": parser_result.quality.score,
+                    },
+                    enabled=tracing,
+                ):
+                    pass
             metrics.partition_ms += (time.perf_counter() - t0) * 1000
+            metrics.primary_parse_ms += float(
+                parser_result.metadata.get(
+                    "primary_duration_ms", parser_result.duration_ms
+                )
+            )
+            metrics.fallback_parse_ms += float(
+                parser_result.metadata.get("fallback_duration_ms", 0.0)
+            )
+            if parser_result.fallback.attempted:
+                metrics.fallback_attempts += 1
+            if parser_result.fallback.used:
+                metrics.fallback_uses += 1
             source_sha256 = file_sha256(pdf_path)
             for element in elements:
                 element.metadata["source_sha256"] = source_sha256
 
             t0 = time.perf_counter()
             with stage_span("normalize-elements", enabled=tracing):
-                # Normalization already done inside partitioner; hierarchy next
+                # Normalization already happened inside the parser adapter.
                 elements = annotate_hierarchy(elements)
             metrics.normalize_ms += (time.perf_counter() - t0) * 1000
 
@@ -315,7 +441,7 @@ class IngestionPipeline:
 
                 chapters = build_chapter_index_from_documents(docs)
                 docs = tag_documents_with_items(docs, chapters)
-                save_chapter_index(self.settings.extracted_dir, pdf_path.name, chapters)
+                save_chapter_index(self.settings.extracted_dir, source_file, chapters)
 
                 if vectorstore is None:
                     embedder = get_embedder(self.settings)
@@ -325,7 +451,7 @@ class IngestionPipeline:
                 with stage_span("embed-chunks", enabled=tracing):
                     ids = [
                         build_doc_id(
-                            pdf_path.name,
+                            source_file,
                             int(d.metadata.get("page", -1) or -1),
                             int(d.metadata.get("chunk", 0) or 0),
                             d.page_content,
@@ -335,7 +461,7 @@ class IngestionPipeline:
                 with stage_span("upsert-chroma", enabled=tracing):
                     if docs:
                         existing_ids = _source_document_ids(
-                            vectorstore, pdf_path.name
+                            vectorstore, source_file
                         )
                         _add_documents_with_retry(
                             vectorstore=vectorstore,
@@ -361,12 +487,12 @@ class IngestionPipeline:
         self._last_report_errors = errors
 
         tqdm.write(
-            f"  {pdf_path.name}: {len(elements)} elements → {indexed} chunks "
+            f"  {source_file}: {len(elements)} elements -> {indexed} chunks "
             f"(bedrock={enrich_stats.get('bedrock_calls', 0)}, cache={enrich_stats.get('cache_hits', 0)})"
         )
 
         return ReportIngestStats(
-            filename=pdf_path.name,
+            filename=source_file,
             pages=pages,
             elements=len(elements),
             text_elements=text_n,
@@ -387,10 +513,31 @@ class IngestionPipeline:
             ),
             failed_elements=failed,
             indexed_chunks=indexed,
+            primary_parser=str(
+                parser_result.metadata.get("primary_parser", parser_result.parser)
+            ),
+            selected_parser=parser_result.parser,
+            parser_version=parser_result.parser_version,
+            parser_quality_score=parser_result.quality.score,
+            fallback_attempted=parser_result.fallback.attempted,
+            fallback_used=parser_result.fallback.used,
+            fallback_reasons=parser_result.fallback.reasons,
         )
 
-    def inspect_elements(self, pdf_path: Path) -> dict:
-        elements = self.partitioner.partition(pdf_path)
+    def inspect_elements(
+        self,
+        pdf_path: Path,
+        *,
+        source_file: Optional[str] = None,
+        artifact_dir: Optional[Path] = None,
+    ) -> dict:
+        source_file = source_file or pdf_path.name
+        parser_result = self.parser_router.parse(
+            pdf_path,
+            source_file=source_file,
+            artifact_dir=artifact_dir,
+        )
+        elements = parser_result.elements
         elements = annotate_hierarchy(elements)
         from collections import Counter
 
@@ -405,11 +552,19 @@ class IngestionPipeline:
             if ok:
                 selected.append(el.element_id)
         return {
-            "file": pdf_path.name,
+            "file": source_file,
             "element_category_counts": dict(cats),
             "ni_item_counts": {str(k): v for k, v in sorted(ni_counts.items())},
             "tables": sum(1 for el in elements if el.category == "Table"),
             "figures": len(figures),
             "figures_selected_for_bedrock": selected,
             "section_titles": sorted({el.section_title for el in elements if el.section_title}),
+            "primary_parser": parser_result.metadata.get(
+                "primary_parser", parser_result.parser
+            ),
+            "selected_parser": parser_result.parser,
+            "parser_version": parser_result.parser_version,
+            "quality": parser_result.quality.model_dump(mode="json"),
+            "fallback": parser_result.fallback.model_dump(mode="json"),
+            "parser_errors": parser_result.errors,
         }

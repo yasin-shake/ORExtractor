@@ -36,12 +36,18 @@ def _ingest_payload(saved: List[str], result: Any, status: str) -> dict:
 
 
 @router.post("/api/ingest", status_code=202, summary="Upload and ingest PDF files")
-async def upload_and_ingest(files: List[UploadFile] = File(...)):
+async def upload_and_ingest(
+    files: List[UploadFile] = File(...),
+    parser: str | None = Form(None),
+    fallback_enabled: bool | None = Form(None),
+):
     """
     Upload one or more PDF files, save them to the knowledge directory,
     and upsert their chunks into the vector store.
     """
     settings = settings_or_503()
+    if parser not in {None, "docling", "mineru"}:
+        raise HTTPException(status_code=422, detail="Unsupported parser")
     settings.knowledge_dir.mkdir(parents=True, exist_ok=True)
     saved: List[str] = []
     for upload in files:
@@ -51,20 +57,37 @@ async def upload_and_ingest(files: List[UploadFile] = File(...)):
         saved.append(name)
 
     try:
-        result = await anyio.to_thread.run_sync(lambda: run_ingest(rebuild=False))
+        result = await anyio.to_thread.run_sync(
+            lambda: run_ingest(
+                rebuild=False,
+                parser=parser,
+                fallback_enabled=fallback_enabled,
+            )
+        )
     except IngestBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _ingest_payload(saved, result, status="ingested")
 
 
 @router.post("/api/ingest/rebuild", status_code=202, summary="Rebuild the entire vector index")
-async def rebuild_index():
+async def rebuild_index(
+    parser: str | None = None,
+    fallback_enabled: bool | None = None,
+):
     """
     Delete the existing vector index and rebuild it from scratch using all PDFs
     currently in the knowledge directory. Use after changing chunk or embedding settings.
     """
     try:
-        result = await anyio.to_thread.run_sync(lambda: run_ingest(rebuild=True))
+        if parser not in {None, "docling", "mineru"}:
+            raise HTTPException(status_code=422, detail="Unsupported parser")
+        result = await anyio.to_thread.run_sync(
+            lambda: run_ingest(
+                rebuild=True,
+                parser=parser,
+                fallback_enabled=fallback_enabled,
+            )
+        )
     except IngestBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _ingest_payload([], result, status="rebuilt")

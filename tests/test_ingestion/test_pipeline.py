@@ -1,10 +1,15 @@
-"""Pipeline wiring tests with mocked partitioner / Bedrock."""
+"""Pipeline wiring tests with a mocked parser router and Bedrock."""
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from ingestion.chunking import elements_to_documents
-from ingestion.models import ElementRecord, IngestionResult
+from ingestion.models import (
+    ElementRecord,
+    ParserQualityReport,
+    ParserResult,
+    ReportIngestStats,
+)
 from ingestion.pipeline import (
     IngestionPipeline,
     _delete_document_ids,
@@ -35,8 +40,8 @@ class _Settings:
     visual_reconstruct_charts = True
     visual_reconstruct_diagrams = True
     visual_enrichment_enabled = False
-    unstructured_provider = "local"
-    unstructured_strategy = "hi_res"
+    ingestion_backend = "docling"
+    parser_primary = "docling"
     langsmith_tracing = False
     langsmith_project = "test"
     langsmith_trace_content = False
@@ -74,7 +79,7 @@ def test_elements_to_documents_pipeline_boundary():
     assert all("ni_item" in d.metadata for d in docs)
 
 
-def test_inspect_elements_uses_partitioner(tmp_path):
+def test_inspect_elements_uses_parser_router(tmp_path):
     settings = _Settings()
     settings.artifact_dir = tmp_path / "artifacts"
     pipeline = IngestionPipeline(settings, enable_visuals=False, partition_only=True)
@@ -95,8 +100,14 @@ def test_inspect_elements_uses_partitioner(tmp_path):
             page_number=1,
         ),
     ]
-    pipeline.partitioner = MagicMock()
-    pipeline.partitioner.partition.return_value = fake_elements
+    pipeline.parser_router = MagicMock()
+    pipeline.parser_router.parse.return_value = ParserResult(
+        source_file="r.pdf",
+        parser="docling",
+        parser_version="test",
+        elements=fake_elements,
+        quality=ParserQualityReport(score=1.0),
+    )
 
     pdf = tmp_path / "r.pdf"
     pdf.write_bytes(b"%PDF")
@@ -105,24 +116,33 @@ def test_inspect_elements_uses_partitioner(tmp_path):
     assert info["element_category_counts"]["Title"] == 1
 
 
-def test_partition_only_reuses_normalized_partition_cache(tmp_path):
+def test_partition_only_reuses_parser_cache(tmp_path):
     settings = _Settings()
     settings.artifact_dir = tmp_path / "artifacts"
     settings.extracted_dir = tmp_path / "extracted"
     pipeline = IngestionPipeline(settings, enable_visuals=False, partition_only=True)
-    pipeline.partitioner = MagicMock()
-    pipeline.partitioner.provider_name = "unstructured-local"
-    pipeline.partitioner.strategy = "hi_res"
-    pipeline.partitioner.version = "test-version"
-    pipeline.partitioner.partition.return_value = [
-        ElementRecord(
-            element_id="n1",
-            source_file="r.pdf",
-            category="NarrativeText",
-            text="Body",
-            page_number=1,
-        )
-    ]
+    pipeline.parser_router = MagicMock()
+    pipeline.parser_router.cache_signature.return_value = {
+        "parser": "docling",
+        "version": "test-version",
+    }
+    pipeline.parser_router.parse.return_value = ParserResult(
+        source_file="r.pdf",
+        parser="docling",
+        parser_version="test-version",
+        elements=[
+            ElementRecord(
+                element_id="n1",
+                source_file="r.pdf",
+                category="NarrativeText",
+                text="Body",
+                page_number=1,
+                parser="docling",
+            )
+        ],
+        page_count=1,
+        quality=ParserQualityReport(score=1.0),
+    )
     pdf = tmp_path / "r.pdf"
     pdf.write_bytes(b"%PDF cache test")
 
@@ -130,7 +150,7 @@ def test_partition_only_reuses_normalized_partition_cache(tmp_path):
     second = pipeline.ingest_pdf(pdf)
     assert first.partition_cache_hits == 0
     assert second.partition_cache_hits == 1
-    assert pipeline.partitioner.partition.call_count == 1
+    assert pipeline.parser_router.parse.call_count == 1
 
 
 def test_stale_source_ids_are_discoverable_and_deletable():
@@ -145,3 +165,37 @@ def test_stale_source_ids_are_discoverable_and_deletable():
 
     _delete_document_ids(vectorstore, {"old-1"})
     vectorstore._collection.delete.assert_called_once_with(ids=["old-1"])
+
+
+def test_ingest_all_discovers_nested_pdfs_with_relative_source_ids(tmp_path):
+    settings = _Settings()
+    settings.knowledge_dir = tmp_path / "knowledge"
+    settings.extra_pdf_dirs = []
+    settings.artifact_dir = tmp_path / "artifacts"
+    nested = settings.knowledge_dir / "region" / "year"
+    nested.mkdir(parents=True)
+    (settings.knowledge_dir / "root.pdf").write_bytes(b"%PDF root")
+    (nested / "report.pdf").write_bytes(b"%PDF nested")
+
+    pipeline = IngestionPipeline(
+        settings,
+        enable_visuals=False,
+        partition_only=True,
+    )
+    pipeline.ingest_pdf = MagicMock(
+        side_effect=lambda _path, source_file, **_kwargs: ReportIngestStats(
+            filename=source_file
+        )
+    )
+
+    result = pipeline.ingest_all(rebuild=True)
+
+    assert result.files == ["region/year/report.pdf", "root.pdf"]
+    assert [
+        call.kwargs["source_file"]
+        for call in pipeline.ingest_pdf.call_args_list
+    ] == ["region/year/report.pdf", "root.pdf"]
+    nested_call = pipeline.ingest_pdf.call_args_list[0]
+    assert nested_call.kwargs["artifact_dir"] == (
+        settings.artifact_dir / "region" / "year" / "report"
+    )

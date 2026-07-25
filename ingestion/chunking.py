@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Dict, List, Optional
 
 from langchain_core.documents import Document
@@ -41,26 +42,59 @@ def _chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> List[str]:
     text = text.strip()
     if not text:
         return []
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than zero")
     if len(text) <= chunk_size:
         return [text]
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    if not paragraphs:
-        paragraphs = [text]
+
+    overlap = min(max(0, chunk_overlap), max(0, chunk_size - 1))
     chunks: List[str] = []
-    buf = ""
-    for para in paragraphs:
-        if not buf:
-            buf = para
-            continue
-        if len(buf) + 2 + len(para) <= chunk_size:
-            buf = f"{buf}\n\n{para}"
-        else:
-            chunks.append(buf)
-            overlap = buf[-chunk_overlap:] if chunk_overlap > 0 else ""
-            buf = f"{overlap}\n\n{para}".strip() if overlap else para
-    if buf:
-        chunks.append(buf)
+    start = 0
+    text_length = len(text)
+    while start < text_length:
+        end = min(text_length, start + chunk_size)
+        if end < text_length:
+            minimum_boundary = start + max(1, chunk_size // 2)
+            for separator in ("\n\n", "\n", " "):
+                boundary = text.rfind(separator, minimum_boundary, end)
+                if boundary >= minimum_boundary:
+                    end = boundary + len(separator)
+                    break
+        piece = text[start:end].strip()
+        if piece:
+            chunks.append(piece)
+        if end >= text_length:
+            break
+        next_start = end - overlap
+        start = next_start if next_start > start else end
     return chunks
+
+
+def _content_chunks(
+    header: str,
+    body: str,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> List[str]:
+    """Return hard-bounded chunks while repeating provenance in every chunk."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than zero")
+    if len(header) >= chunk_size:
+        header = header[: max(0, chunk_size - 2)].rstrip() + "\n"
+    body_size = max(1, chunk_size - len(header))
+    body_overlap = min(max(0, chunk_overlap), max(0, body_size - 1))
+    pieces = _chunk_text(body, body_size, body_overlap)
+    return [header + piece for piece in pieces] if pieces else [header.rstrip()]
+
+
+_INLINE_IMAGE_MARKDOWN = re.compile(
+    r"!\[[^\]]*\]\(data:image/[^)]*\)",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_embedded_image_markup(value: str) -> str:
+    return _INLINE_IMAGE_MARKDOWN.sub("", value).strip()
 
 
 def _base_meta(el: ElementRecord, chunk_idx: int, doc_type: str, **extra) -> dict:
@@ -72,9 +106,12 @@ def _base_meta(el: ElementRecord, chunk_idx: int, doc_type: str, **extra) -> dic
         "ni_item": el.ni_item,
         "section_title": el.section_title or "",
         "element_id": el.element_id,
-        "parser": "unstructured",
+        "parser": el.parser or "unknown",
+        "parser_version": el.parser_version or "",
         "pipeline_version": PIPELINE_VERSION,
     }
+    if el.parser_element_id:
+        meta["parser_element_id"] = el.parser_element_id
     if el.image_path:
         meta["asset_path"] = el.image_path
     for k, v in extra.items():
@@ -120,8 +157,15 @@ def elements_to_documents(
             else:
                 parts.append(el.text.strip())
         body = "\n\n".join(p for p in parts if p)
-        for piece in _chunk_text(body, chunk_size, chunk_overlap):
-            content = _header(lead.source_file, lead.ni_item, lead.section_title, lead.page_number) + piece
+        header = _header(
+            lead.source_file,
+            lead.ni_item,
+            lead.section_title,
+            lead.page_number,
+        )
+        for content in _content_chunks(
+            header, body, chunk_size, chunk_overlap
+        ):
             docs.append(
                 Document(
                     page_content=content,
@@ -148,10 +192,25 @@ def elements_to_documents(
         flush_text()
 
         if el.category == "Formula" and el.text.strip():
-            content = _header(el.source_file, el.ni_item, el.section_title, el.page_number, "Type: formula")
-            content += el.text.strip()
-            docs.append(Document(page_content=content, metadata=_base_meta(el, chunk_counter, "formula")))
-            chunk_counter += 1
+            header = _header(
+                el.source_file,
+                el.ni_item,
+                el.section_title,
+                el.page_number,
+                "Type: formula",
+            )
+            for content in _content_chunks(
+                header, el.text.strip(), chunk_size, chunk_overlap
+            ):
+                docs.append(
+                    Document(
+                        page_content=content,
+                        metadata=_base_meta(
+                            el, chunk_counter, "formula"
+                        ),
+                    )
+                )
+                chunk_counter += 1
             continue
 
         if el.category == "Table":
@@ -164,37 +223,49 @@ def elements_to_documents(
             )
             if validation_reliable and validation.normalized_markdown:
                 table_md = validation.normalized_markdown
+            elif el.text_as_markdown:
+                table_md = el.text_as_markdown
             elif el.text_as_html:
                 table_md = _html_table_to_markdown(el.text_as_html) or el.text
             else:
                 table_md = el.text
             desc = validation.description if validation else ""
-            content = _header(
+            header = _header(
                 el.source_file,
                 el.ni_item,
                 el.section_title,
                 el.page_number,
                 f"Table: {el.caption or el.element_id}",
             )
-            content += (table_md or "").strip()
+            body = (table_md or "").strip()
             if desc:
-                content += f"\n\nTable context:\n{desc}"
+                body += f"\n\nTable context:\n{desc}"
             if validation and (validation.issues or validation.warnings):
                 warnings = list(validation.issues) + list(validation.warnings)
-                content += f"\n\nValidation warnings: {'; '.join(warnings)}"
-            docs.append(
-                Document(
-                    page_content=content,
-                    metadata=_base_meta(
-                        el,
-                        table_counter,
-                        "table",
-                        confidence=validation.confidence if validation else None,
-                        table_valid=validation.is_valid if validation else None,
-                    ),
-                )
+                body += f"\n\nValidation warnings: {'; '.join(warnings)}"
+            contents = _content_chunks(
+                header, body, chunk_size, chunk_overlap
             )
-            table_counter += 1
+            for part, content in enumerate(contents, start=1):
+                docs.append(
+                    Document(
+                        page_content=content,
+                        metadata=_base_meta(
+                            el,
+                            table_counter,
+                            "table",
+                            confidence=(
+                                validation.confidence if validation else None
+                            ),
+                            table_valid=(
+                                validation.is_valid if validation else None
+                            ),
+                            part=part,
+                            parts=len(contents),
+                        ),
+                    )
+                )
+                table_counter += 1
             continue
 
         if el.category in {"Image", "Figure"}:
@@ -204,7 +275,9 @@ def elements_to_documents(
             caption = (analysis.caption if analysis and analysis.caption else el.caption) or ""
             description = analysis.description if analysis else ""
             if not description:
-                description = el.text or "Figure with no extracted description."
+                description = _strip_embedded_image_markup(el.text)
+                if not description:
+                    description = "Figure with no extracted description."
 
             doc_type = "figure"
             extracted_values = ""
@@ -227,14 +300,14 @@ def elements_to_documents(
                 doc_type = "diagram"
                 extracted_values = analysis.diagram.model_dump_json()
 
-            content = _header(
+            header = _header(
                 el.source_file,
                 el.ni_item,
                 el.section_title,
                 el.page_number,
                 f"Figure type: {figure_type}\nCaption: {caption}",
             )
-            content += f"Description:\n{description}"
+            body = f"Description:\n{description}"
             if not analysis:
                 surrounding = "\n\n".join(
                     part
@@ -242,30 +315,40 @@ def elements_to_documents(
                     if part
                 )
                 if surrounding:
-                    content += f"\n\nSurrounding context:\n{surrounding}"
+                    body += f"\n\nSurrounding context:\n{surrounding}"
                 if el.skip_reason:
-                    content += f"\n\nVisual enrichment status: {el.skip_reason}"
+                    body += f"\n\nVisual enrichment status: {el.skip_reason}"
             if extracted_values:
-                content += f"\n\nExtracted values:\n{extracted_values}"
+                body += f"\n\nExtracted values:\n{extracted_values}"
             if analysis and analysis.warnings:
-                content += f"\n\nWarnings: {'; '.join(analysis.warnings)}"
+                body += f"\n\nWarnings: {'; '.join(analysis.warnings)}"
 
-            meta = _base_meta(
-                el,
-                figure_counter,
-                doc_type,
-                figure_type=figure_type,
-                confidence=analysis.confidence if analysis else None,
-                values_estimated=bool(analysis.values_are_estimated) if analysis else False,
-                reconstructed_path=recon.get("reconstructed_path"),
-                enrichment_status=(
-                    "completed"
-                    if analysis
-                    else (el.skip_reason or "not_enriched")
-                ),
+            contents = _content_chunks(
+                header, body, chunk_size, chunk_overlap
             )
-            docs.append(Document(page_content=content, metadata=meta))
-            figure_counter += 1
+            for part, content in enumerate(contents, start=1):
+                meta = _base_meta(
+                    el,
+                    figure_counter,
+                    doc_type,
+                    figure_type=figure_type,
+                    confidence=analysis.confidence if analysis else None,
+                    values_estimated=(
+                        bool(analysis.values_are_estimated) if analysis else False
+                    ),
+                    reconstructed_path=recon.get("reconstructed_path"),
+                    enrichment_status=(
+                        "completed"
+                        if analysis
+                        else (el.skip_reason or "not_enriched")
+                    ),
+                    part=part,
+                    parts=len(contents),
+                )
+                docs.append(
+                    Document(page_content=content, metadata=meta)
+                )
+                figure_counter += 1
 
     flush_text()
     return docs

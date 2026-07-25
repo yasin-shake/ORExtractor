@@ -8,7 +8,7 @@ Built for the full spectrum of NI 43-101 users — investors and fund managers c
 
 ## Capabilities
 
-- **Layout-aware PDF ingestion** — partitions text, titles, lists, tables, figures, captions, coordinates, and hierarchy with local or hosted Unstructured. Selected visuals and important/suspicious tables are enriched by Claude Haiku through AWS Bedrock using validated Pydantic output. Original crops remain authoritative; only validated charts and process diagrams are reconstructed. The legacy olmOCR path remains available during benchmark migration.
+- **Layout-aware PDF ingestion** — Docling is the primary parser for text, hierarchy, reading order, tables, formulas, figures, captions, and page provenance. Deterministic quality gates invoke an isolated MinerU fallback only when needed. LangChain carries canonical chunks to Chroma, Claude Haiku enriches selected visuals, and LangSmith traces content-free stage metrics by default.
 - **Structured extraction** — a 5-pass Claude (Bedrock) pipeline turns each report into a typed `NI43101Report` JSON object (identity, resources/reserves, economics/technical, geology/exploration/environmental, and portfolio metadata tags), never fabricating values for sections that aren't in the report. Each pass fans out its NI Item/topic queries concurrently for speed.
 - **Agentic due-diligence chat** — a LangGraph ReAct agent with 6 tools (question routing, Item-scoped retrieval, extraction lookup, peer discovery, cross-report benchmarking, DD playbooks) that cites NI Item + page numbers, raises red flags from a due-diligence playbook, and issues a Go / Conditional Go / Further Work / No-Go assessment.
 - **Portfolio screener dashboard** — a single-page HTML/JS app (no build step) with a KPI home page, sortable/filterable portfolio table, side-by-side report comparison (up to 4 reports), a Leaflet world map of every geolocated project, per-report resource/economics/geology/exploration views, and an embedded 3D geological model viewer (`spatial_data/` HTML models).
@@ -20,10 +20,11 @@ Built for the full spectrum of NI 43-101 users — investors and fund managers c
 
 ```
 PDF files (knowledge/ + extra dirs)
-  → Unstructured local/API partition → canonical text/table/figure elements + retained artifacts
+  → Docling primary parse → deterministic quality gates → MinerU fallback when required
+  → parser-neutral text/table/figure elements + lossless retained artifacts
   → selective Claude Haiku enrichment → deterministic validation/reconstruction
   → section-aware chunk + NI Item/section tagging (chapter_index.py consistency pass)
-  → embed (OpenAI text-embedding-3-small) → store (Chroma persistent vector DB)
+  → embed (local Qwen3; OpenAI startup fallback) → store (Chroma persistent vector DB)
   → versioned partition/enrichment caches + manifest skip unchanged work
 
 Agentic chat  → LangGraph ReAct agent (6 tools: route_question, get_routing_playbook,
@@ -41,9 +42,11 @@ Dashboard     → REST API → interactive HTML (KPI home · portfolio screener 
 ## Prerequisites
 
 - Python 3.10+
-- **OpenAI API key** — required for `ingest` only (embeddings, `text-embedding-3-small`). The `extract`, `chat`, and `reindex-chapters` commands do not contact OpenAI and can run without a valid key.
+- **CUDA-capable PyTorch** — recommended for local Qwen embeddings. CPU is supported with `LOCAL_EMBED_DEVICE=cpu`, but is slower.
+- **OpenAI API key** — optional when local Qwen starts successfully; required only when OpenAI is selected or used as the startup fallback.
 - **AWS credentials** with Bedrock access — used for selective visual enrichment (Claude Haiku), chat, and structured extraction. Credentials are read through the normal AWS credential chain.
-- **Unstructured** — installed by `requirements.txt` for local partitioning. Set `UNSTRUCTURED_PROVIDER=api` plus the API URL/key to use a hosted or self-hosted Partition API instead. No GPU or vLLM server is required.
+- **Docling** — installed by `requirements.txt` and runs locally by default. `DOCLING_EXECUTION_MODE=serve` can use a Docling Serve `/v1/convert/file` deployment.
+- **MinerU fallback** — use a service via `MINERU_API_URL` (recommended), or install `requirements-mineru.txt` in a separate environment and select CLI mode. It is intentionally not imported into the main application.
 
 ## Setup
 
@@ -61,13 +64,17 @@ copy .env.example .env        # Windows
 # cp .env.example .env        # macOS / Linux
 ```
 
-Edit `.env` and set your `OPENAI_API_KEY` and AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optionally `AWS_SESSION_TOKEN` for STS). All other variables have sensible defaults.
+Edit `.env` and set AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, optionally `AWS_SESSION_TOKEN` for STS). Keep `EMBEDDING_PROVIDER=qwen` for local embeddings. Set `OPENAI_API_KEY` if you want the configured OpenAI startup fallback.
 
 ## Workflow
 
 ### 1 — Add reports
 
-Drop NI 43-101 PDF files into `knowledge/`. Multiple directories are supported via `RAG_EXTRA_PDF_DIRS` (see Configuration).
+Drop NI 43-101 PDF files anywhere under `knowledge/`. Discovery is recursive,
+so category/year subfolders are ingested automatically. Multiple additional
+directory trees are supported via `RAG_EXTRA_PDF_DIRS` (see Configuration).
+Nested reports use their path relative to the configured root as the stable
+source ID, which prevents equal filenames in different folders from colliding.
 
 ### 2 — Ingest
 
@@ -75,7 +82,7 @@ Drop NI 43-101 PDF files into `knowledge/`. Multiple directories are supported v
 python rag_app.py ingest
 ```
 
-Set `INGESTION_BACKEND=unstructured` to use the layout-aware pipeline. Unstructured output is normalized into stable text, table, figure, caption, formula, and page-break records. Source table/figure artifacts are retained, section and NI Item context is attached, and the result is converted to standard LangChain `Document` records.
+Set `INGESTION_BACKEND=docling` to use the layout-aware pipeline. Docling's lossless JSON and Markdown, normalized elements, table/figure crops, quality report, and parser-selection decision are retained. If configured gates fail, MinerU runs on the whole document and the router selects one complete canonical stream by deterministic score. The selected stream is converted to standard LangChain `Document` records with parser provenance.
 
 Claude Haiku is called only for routed figures and important or suspicious tables. A failed visual call is recorded per element and does not stop normal text ingestion. Reconstruction is deterministic through Plotly or Graphviz, never executes model-generated code, and rejects geological maps, cross-sections, mine plans, block models, and similar technical geometry.
 
@@ -84,12 +91,26 @@ Partition output, normalized elements, structured model responses, final chunks,
 To wipe and rebuild the index (e.g. after changing chunk settings):
 
 ```bash
-python rag_app.py ingest --rebuild
-python rag_app.py ingest --file report.pdf --backend unstructured
-python rag_app.py ingest --partition-only --backend unstructured
-python rag_app.py ingest --reprocess-visuals --backend unstructured
+python rag_app.py ingest --rebuild --file report.pdf --parser docling
+python rag_app.py ingest --file report.pdf --parser docling --partition-only
+python rag_app.py ingest --file report.pdf --parser docling --no-fallback
+python rag_app.py ingest --file report.pdf --force-parser mineru
+python rag_app.py ingest --reprocess-visuals --parser docling
 python rag_app.py inspect-elements --file report.pdf
+python rag_app.py compare-parsers --file report.pdf
 ```
+
+The first command deletes the configured Chroma collection and rebuilds it from exactly one PDF. Use `--partition-only` first when validating parser artifacts without embeddings, Bedrock calls, or Chroma writes.
+For a nested report, pass its relative source path, for example
+`--file "Sedar_2024/April/report.pdf"`. A basename remains valid when it is
+unique across all configured PDF trees.
+
+The embedding backend is selected once at process startup. If local Qwen fails
+its health check, ORExtractor uses the configured OpenAI fallback before opening
+or rebuilding Chroma. It never mixes providers within a collection: the
+provider, model, dimensions, query instruction, and maximum token length are
+stored as collection metadata. Changing any of them requires `--rebuild`; an
+incompatible existing collection is rejected with a rebuild command.
 
 After upgrading to chapter-aware ingestion, or if heading detection needs a refresh, re-tag existing chunks with NI Item metadata without re-embedding:
 
@@ -295,8 +316,8 @@ Study type/date, pre- and post-tax NPV, IRR, payback, discount rate, initial/sus
 
 | File | Purpose |
 |------|---------|
-| `rag_app.py` | Settings/env loading, legacy olmOCR compatibility, Chroma ingest/retrieval, chat prompt building, and CLI entry points |
-| `ingestion/` | Canonical schemas, local/API Unstructured partitioners, hierarchy/context, Bedrock enrichment, caches, deterministic visual validation/rendering, chunking, manifests, and LangSmith telemetry |
+| `rag_app.py` | Settings/env loading, Chroma ingest/retrieval, chat prompt building, and CLI entry points |
+| `ingestion/` | Parser-neutral schemas; Docling and MinerU adapters; quality routing; hierarchy/context; LangChain chunking; Bedrock enrichment; caches; evaluation; manifests; and LangSmith telemetry |
 | `api_routers/` | Document, ingestion, Chroma export/info, reports, and chat API routers |
 | `schemas.py` | Pydantic models for the structured `NI43101Report` and all nested sub-models |
 | `extractor.py` | 5-pass structured extraction pipeline, NI Item/topic-aligned context gathering, partial-result merging, rate-limit backoff, batch extraction across the portfolio |
@@ -318,10 +339,10 @@ Study type/date, pre- and post-tax NPV, IRR, payback, discount rate, initial/sus
 
 | Purpose | Libraries |
 |---------|-----------|
-| Vector store & embeddings | `chromadb`, `openai`, `langchain-core`, `langchain-openai`, `langchain-chroma` |
+| Vector store & embeddings | `chromadb`, `transformers`, local Qwen3, `openai`, `langchain-core`, `langchain-openai`, `langchain-chroma` |
 | LLM (Claude via AWS Bedrock) | `langchain-aws`, `boto3` |
 | Agent | `langgraph` (ReAct tool-calling loop) |
-| PDF parsing | `unstructured[pdf]` (local or API layout partitioning), `PyMuPDF` (rendering, diagnostics, and thumbnails); legacy olmOCR compatibility remains during benchmark migration |
+| PDF parsing | `docling` (primary), isolated `mineru` (fallback), `langchain-docling` (benchmark/integration), `PyMuPDF` (rendering and diagnostics) |
 | Visual enrichment/reconstruction | `langchain-aws`, Claude Haiku on Bedrock, `pillow`, `tenacity`, `plotly`, `kaleido`, `graphviz` |
 | Observability | `langsmith` (content hidden by default) |
 | API server | `fastapi`, `uvicorn[standard]`, `anyio`, `python-multipart` |
@@ -335,14 +356,24 @@ Study type/date, pre- and post-tax NPV, IRR, payback, discount rate, initial/sus
 docker compose up --build
 ```
 
-The API is available at `http://localhost:8000`. The bundled `docker-compose.yml` targets a **read-only deployment**: `knowledge/` and `extracted_data/` are bind-mounted read-only (ingestion/extraction are expected to run off-server against pre-built data), while `.chroma_db/` is writable because Chroma opens its SQLite store with write access even for read-only queries. Unstructured ingestion does not require a local GPU or vLLM service.
+The API is available at `http://localhost:8000`. The bundled `docker-compose.yml` targets a **read-only deployment**: `knowledge/` and `extracted_data/` are bind-mounted read-only (ingestion/extraction are expected to run off-server against pre-built data), while `.chroma_db/` is writable because Chroma opens its SQLite store with write access even for read-only queries.
 
 ## Configuration (`.env`)
 
 | Variable | Default | Description |
 |---|---|---|
-| `OPENAI_API_KEY` | — | **Required.** Embeddings. |
-| `OPENAI_EMBED_MODEL` | `text-embedding-3-small` | Embedding model |
+| `EMBEDDING_PROVIDER` | `qwen` | Primary embedding backend: `qwen` or `openai` |
+| `EMBEDDING_FALLBACK_PROVIDER` | `openai` | Startup fallback backend; empty disables fallback |
+| `LOCAL_EMBED_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | Hugging Face model used for local embeddings |
+| `LOCAL_EMBED_DEVICE` | `cuda` | Local embedding device: `auto`, `cpu`, `cuda`, or `cuda:N` |
+| `LOCAL_EMBED_BATCH_SIZE` | `16` | Local inference batch size |
+| `LOCAL_EMBED_MAX_LENGTH` | `512` | Maximum tokens per local embedding input |
+| `LOCAL_EMBED_DIMENSIONS` | `1024` | Number of local embedding dimensions |
+| `LOCAL_EMBED_DTYPE` | `float16` | GPU inference dtype (`float16`, `bfloat16`, or `float32`) |
+| `LOCAL_EMBED_QUERY_INSTRUCTION` | NI 43-101 retrieval instruction | Instruction prepended to queries, not documents |
+| `OPENAI_API_KEY` | — | Required only when OpenAI is selected or used as fallback |
+| `OPENAI_EMBED_MODEL` | `text-embedding-3-small` | OpenAI fallback model |
+| `OPENAI_EMBED_DIMENSIONS` | `1536` | OpenAI embedding dimensions |
 | `OPENAI_BASE_URL` | OpenAI default | Override for compatible APIs |
 | `AWS_REGION` | `us-east-2` | AWS region for Bedrock |
 | `AWS_ACCESS_KEY_ID` | — | **Required.** AWS credential |
@@ -357,15 +388,33 @@ The API is available at `http://localhost:8000`. The bundled `docker-compose.yml
 | `RAG_CHUNK_SIZE` | `1400` | Max characters per chunk |
 | `RAG_CHUNK_OVERLAP` | `150` | Overlap between chunks |
 | `RAG_EMBED_BATCH_SIZE` | `64` | Embedding batch size |
-| `RAG_UPSERT_BATCH_SIZE` | `24` | Chroma upsert batch size |
+| `RAG_UPSERT_BATCH_SIZE` | `128` | Chroma upsert batch size; OpenAI requests are internally split by `RAG_EMBED_BATCH_SIZE` |
 | `RAG_TOP_K` | `8` | Chunks retrieved per non-agentic chat query |
 | `RAG_EXTRACTED_DIR` | `extracted_data` | Where structured extractions (and chapter indexes) are saved |
 | `NI43101_EXTRACT_TOP_K` | `12` | Chunks per topic/Item query fed to the extractor — lower to `6` if hitting rate limits |
-| `INGESTION_BACKEND` | `olmocr` | `unstructured` for the new pipeline; `olmocr` remains a temporary benchmark-compatibility option |
-| `UNSTRUCTURED_PROVIDER` | `local` | `local` or `api` |
-| `UNSTRUCTURED_STRATEGY` | `hi_res` | Unstructured PDF strategy |
-| `UNSTRUCTURED_API_URL` | _(unset)_ | Optional hosted/self-hosted legacy Partition endpoint |
-| `UNSTRUCTURED_API_KEY` | _(unset)_ | Unstructured API key |
+| `INGESTION_BACKEND` | `docling` | `docling` primary or `mineru` forced |
+| `PARSER_FALLBACK` | `mineru` | Quality-gated fallback parser |
+| `PARSER_FALLBACK_ENABLED` | `true` | Allow deterministic fallback routing |
+| `DOCLING_EXECUTION_MODE` | `local` | `local` or `serve` |
+| `DOCLING_SERVE_URL` | _(unset)_ | Docling Serve base URL |
+| `DOCLING_OCR_BACKEND` | `onnxruntime` | RapidOCR backend: `onnxruntime`, `openvino`, `paddle`, or `torch`; use `torch` with CUDA PyTorch for GPU OCR |
+| `DOCLING_OCR_LANGUAGES` | `english` | Comma-separated OCR languages |
+| `DOCLING_FORCE_FULL_PAGE_OCR` | `false` | OCR every page region; leave disabled to skip unnecessary OCR on native PDF text |
+| `DOCLING_OCR_BITMAP_AREA_THRESHOLD` | `0.05` | Minimum bitmap-area ratio that triggers adaptive OCR |
+| `DOCLING_IMAGES_SCALE` | `1.0` | Render scale for retained page/figure images |
+| `DOCLING_OCR_BATCH_SIZE` | `1` | OCR stage batch size; conservative for large PDFs |
+| `DOCLING_LAYOUT_BATCH_SIZE` | `1` | Layout stage batch size |
+| `DOCLING_TABLE_BATCH_SIZE` | `1` | Table stage batch size |
+| `DOCLING_QUEUE_MAX_SIZE` | `2` | Maximum buffered pages between Docling stages |
+| `DOCLING_PAGE_BATCH_SIZE` | `1` | PDF pages admitted to the local pipeline together |
+| `DOCLING_NUM_THREADS` | `2` | Docling accelerator worker threads |
+| `DOCLING_DEVICE` | `auto` | Accelerator: `auto`, `cpu`, `cuda`, `mps`, or `xpu` |
+| `MINERU_EXECUTION_MODE` | `service` | `service` or isolated `cli` |
+| `MINERU_API_URL` | _(unset)_ | MinerU service endpoint |
+| `PARSER_MIN_TEXT_PAGE_COVERAGE` | `0.90` | Fallback text-page coverage gate; calibrate on corpus |
+| `PARSER_MAX_EMPTY_PAGE_RATIO` | `0.10` | Fallback empty-page gate |
+| `PARSER_MAX_REPLACEMENT_CHAR_RATIO` | `0.01` | Text corruption gate |
+| `PARSER_MIN_TABLE_VALID_RATIO` | `0.80` | Table structure gate |
 | `RAG_ARTIFACT_DIR` | `ingestion_artifacts` | Retained source crops, raw/normalized partition output, enrichments, chunks, and audit manifests |
 | `BEDROCK_VISUAL_MODEL_ID` | Claude 3.5 Haiku inference profile | Separate Bedrock model/inference profile for visual ingestion |
 | `BEDROCK_VISUAL_MAX_TOKENS` | `3500` | Maximum output tokens per visual/table call |
@@ -375,10 +424,6 @@ The API is available at `http://localhost:8000`. The bundled `docker-compose.yml
 | `VISUAL_TOKEN_BUDGET_PER_REPORT` | `350000` | Conservative per-report visual token budget |
 | `LANGSMITH_TRACING` | `false` | Enable ingestion traces |
 | `LANGSMITH_TRACE_CONTENT` | `false` | Include document content in traces; disabled by default |
-| `OLMOCR_SERVER_URL` | _(unset)_ | OpenAI-compatible URL of the olmocr inference server (e.g. `http://localhost:8000/v1`). Unset = PyMuPDF text-layer fallback |
-| `OLMOCR_API_KEY` | _(unset)_ | API key for the olmocr server (leave blank for local/unauthenticated endpoints) |
-| `OLMOCR_MODEL` | `allenai/olmOCR-7B-0225-preview` | Model name passed to the inference server |
-| `OLMOCR_WORKERS` | `4` | Parallel page requests per PDF |
 | `AGENT_CHAT` | `1` | `1` = agentic chat (LangGraph/pipeline); `0` = plain RAG chat |
 | `AGENT_MODE` | `langgraph` | `langgraph` = ReAct tool-calling agent; `pipeline` = deterministic tool-chain + single LLM call |
 | `AGENT_DRY_RUN` | _(unset)_ | `1` = run agent tools only, skip the Bedrock call entirely (routing/retrieval/benchmark smoke test) |
@@ -393,7 +438,7 @@ pytest
 
 ## Notes
 
-- **PDF parsing** — the Unstructured backend preserves layout elements and source artifacts, then selectively uses Claude Haiku for visual understanding. The olmOCR/PyMuPDF path remains only as a migration baseline until comparative quality gates pass.
+- **PDF parsing** — Docling preserves lossless parser JSON and source artifacts; MinerU is invoked only on explicit request or deterministic quality failure.
 - **NI Item tagging** — after parsing, `chapter_index.py` scans each chunk's full content for "Item N — …" headings to build a page-range chapter index per report, then tags every chunk's `ni_item` and `section_title` metadata. This powers Item-scoped retrieval in both extraction and agentic chat.
 - **Chunk overlap** — `RAG_CHUNK_OVERLAP` (default 150 chars) is applied during paragraph chunking: the tail of each completed chunk is prepended to the next chunk so context around paragraph boundaries is not lost at retrieval time.
 - **Embedding cache** — `OpenAIEmbeddings` is wrapped in a process-level query cache (`_CachedOpenAIEmbeddings`) so repeated queries across extraction passes and tool calls don't make redundant API calls.

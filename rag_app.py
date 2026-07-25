@@ -6,19 +6,24 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable, List, Optional, Tuple
 
-import chromadb
-import requests
 from tqdm import tqdm
 from dotenv import load_dotenv
+from langchain_core.embeddings import Embeddings
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 from langchain_aws import ChatBedrockConverse
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
 from openai import APIConnectionError, APIError, RateLimitError
+
+# When this file is executed directly, ingestion modules import helpers using
+# ``from rag_app import ...``. Alias the running module so Python does not load
+# a second copy (and, critically, a second local embedding model).
+if __name__ == "__main__":
+    sys.modules.setdefault("rag_app", sys.modules[__name__])
 
 _MAX_HISTORY_TURNS = 10  # user+assistant pairs to keep in conversation history
 
@@ -70,17 +75,62 @@ class Settings:
     top_k: int
     extracted_dir: Path
     extract_top_k: int
-    olmocr_server_url: Optional[str] = None
-    olmocr_api_key: str = ""
-    olmocr_model: str = "allenai/olmOCR-7B-0225-preview"
-    olmocr_workers: int = 4
     spatial_dir: Path = Path("spatial_data")
-    # Unstructured / visual ingestion
-    ingestion_backend: str = "olmocr"
-    unstructured_provider: str = "local"
-    unstructured_strategy: str = "hi_res"
-    unstructured_api_url: Optional[str] = None
-    unstructured_api_key: str = ""
+    embedding_provider: str = "qwen"
+    embedding_fallback_provider: str = "openai"
+    openai_embed_dimensions: int = 1536
+    local_embed_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    local_embed_device: str = "cuda"
+    local_embed_batch_size: int = 16
+    local_embed_max_length: int = 512
+    local_embed_dimensions: int = 1024
+    local_embed_dtype: str = "float16"
+    local_embed_query_instruction: str = (
+        "Given a technical due diligence question about an NI 43-101 mining "
+        "report, retrieve relevant report passages that answer the question"
+    )
+    # Parser-neutral document and visual ingestion
+    ingestion_backend: str = "docling"
+    parser_primary: str = "docling"
+    force_parser: str = ""
+    parser_fallback: str = "mineru"
+    parser_fallback_enabled: bool = True
+    parser_min_text_page_coverage: float = 0.90
+    parser_max_empty_page_ratio: float = 0.10
+    parser_max_replacement_char_ratio: float = 0.01
+    parser_min_table_valid_ratio: float = 0.80
+    parser_require_picture_crops: bool = False
+    docling_execution_mode: str = "local"
+    docling_serve_url: Optional[str] = None
+    docling_serve_api_key: str = ""
+    docling_do_ocr: bool = True
+    docling_ocr_backend: str = "onnxruntime"
+    docling_ocr_languages: str = "english"
+    docling_force_full_page_ocr: bool = False
+    docling_ocr_bitmap_area_threshold: float = 0.05
+    docling_do_table_structure: bool = True
+    docling_table_mode: str = "accurate"
+    docling_generate_page_images: bool = True
+    docling_generate_picture_images: bool = True
+    docling_images_scale: float = 1.0
+    docling_ocr_batch_size: int = 1
+    docling_layout_batch_size: int = 1
+    docling_table_batch_size: int = 1
+    docling_queue_max_size: int = 2
+    docling_page_batch_size: int = 1
+    docling_num_threads: int = 2
+    docling_device: str = "auto"
+    docling_heading_hierarchy: bool = True
+    docling_timeout_seconds: int = 900
+    docling_max_pages: int = 1000
+    docling_max_file_mb: int = 2048
+    docling_model_artifact_revision: str = ""
+    mineru_execution_mode: str = "service"
+    mineru_api_url: Optional[str] = None
+    mineru_api_token: str = ""
+    mineru_command: str = "mineru"
+    mineru_backend: str = "pipeline"
+    mineru_timeout_seconds: int = 1800
     artifact_dir: Path = Path("ingestion_artifacts")
     bedrock_visual_model_id: str = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
     bedrock_visual_max_tokens: int = 3500
@@ -112,11 +162,11 @@ def load_settings() -> Settings:
         print("Warning: no .env file found, using defaults. Copy .env.example to .env to configure.")
     load_dotenv()
     openai_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not openai_key:
-        raise RuntimeError("OPENAI_API_KEY is required for embeddings. Add it to .env before running.")
-    backend = os.getenv("INGESTION_BACKEND", "olmocr").strip().lower() or "olmocr"
-    if backend not in {"olmocr", "unstructured"}:
-        raise RuntimeError(f"INGESTION_BACKEND must be 'olmocr' or 'unstructured', got {backend!r}")
+    backend = os.getenv("INGESTION_BACKEND", "docling").strip().lower() or "docling"
+    if backend not in {"docling", "mineru"}:
+        raise RuntimeError(
+            f"INGESTION_BACKEND must be 'docling' or 'mineru', got {backend!r}"
+        )
     return Settings(
         openai_api_key=openai_key,
         openai_base_url=os.getenv("OPENAI_BASE_URL", "").strip() or None,
@@ -137,20 +187,115 @@ def load_settings() -> Settings:
         chunk_size=int(os.getenv("RAG_CHUNK_SIZE", "1400")),
         chunk_overlap=int(os.getenv("RAG_CHUNK_OVERLAP", "150")),
         embed_batch_size=int(os.getenv("RAG_EMBED_BATCH_SIZE", "64")),
-        upsert_batch_size=int(os.getenv("RAG_UPSERT_BATCH_SIZE", "24")),
+        upsert_batch_size=int(os.getenv("RAG_UPSERT_BATCH_SIZE", "128")),
         top_k=int(os.getenv("RAG_TOP_K", "8")),
         extracted_dir=Path(os.getenv("RAG_EXTRACTED_DIR", "extracted_data")),
         extract_top_k=int(os.getenv("NI43101_EXTRACT_TOP_K", "12")),
-        olmocr_server_url=os.getenv("OLMOCR_SERVER_URL", "").strip() or None,
-        olmocr_api_key=os.getenv("OLMOCR_API_KEY", "").strip(),
-        olmocr_model=os.getenv("OLMOCR_MODEL", "allenai/olmOCR-7B-0225-preview"),
-        olmocr_workers=int(os.getenv("OLMOCR_WORKERS", "4")),
         spatial_dir=Path(os.getenv("RAG_SPATIAL_DIR", "spatial_data")),
+        embedding_provider=os.getenv(
+            "EMBEDDING_PROVIDER", "qwen"
+        ).strip().lower() or "qwen",
+        embedding_fallback_provider=os.getenv(
+            "EMBEDDING_FALLBACK_PROVIDER", "openai"
+        ).strip().lower(),
+        openai_embed_dimensions=int(
+            os.getenv("OPENAI_EMBED_DIMENSIONS", "1536")
+        ),
+        local_embed_model=os.getenv(
+            "LOCAL_EMBED_MODEL", "Qwen/Qwen3-Embedding-0.6B"
+        ).strip(),
+        local_embed_device=os.getenv(
+            "LOCAL_EMBED_DEVICE", "cuda"
+        ).strip().lower(),
+        local_embed_batch_size=int(
+            os.getenv("LOCAL_EMBED_BATCH_SIZE", "16")
+        ),
+        local_embed_max_length=int(
+            os.getenv("LOCAL_EMBED_MAX_LENGTH", "512")
+        ),
+        local_embed_dimensions=int(
+            os.getenv("LOCAL_EMBED_DIMENSIONS", "1024")
+        ),
+        local_embed_dtype=os.getenv(
+            "LOCAL_EMBED_DTYPE", "float16"
+        ).strip().lower(),
+        local_embed_query_instruction=os.getenv(
+            "LOCAL_EMBED_QUERY_INSTRUCTION",
+            (
+                "Given a technical due diligence question about an NI 43-101 "
+                "mining report, retrieve relevant report passages that answer "
+                "the question"
+            ),
+        ).strip(),
         ingestion_backend=backend,
-        unstructured_provider=os.getenv("UNSTRUCTURED_PROVIDER", "local").strip() or "local",
-        unstructured_strategy=os.getenv("UNSTRUCTURED_STRATEGY", "hi_res").strip() or "hi_res",
-        unstructured_api_url=os.getenv("UNSTRUCTURED_API_URL", "").strip() or None,
-        unstructured_api_key=os.getenv("UNSTRUCTURED_API_KEY", "").strip(),
+        parser_primary=os.getenv("PARSER_PRIMARY", "docling").strip().lower() or "docling",
+        force_parser=os.getenv("FORCE_PARSER", "").strip().lower(),
+        parser_fallback=os.getenv("PARSER_FALLBACK", "mineru").strip().lower(),
+        parser_fallback_enabled=_env_bool("PARSER_FALLBACK_ENABLED", True),
+        parser_min_text_page_coverage=float(
+            os.getenv("PARSER_MIN_TEXT_PAGE_COVERAGE", "0.90")
+        ),
+        parser_max_empty_page_ratio=float(
+            os.getenv("PARSER_MAX_EMPTY_PAGE_RATIO", "0.10")
+        ),
+        parser_max_replacement_char_ratio=float(
+            os.getenv("PARSER_MAX_REPLACEMENT_CHAR_RATIO", "0.01")
+        ),
+        parser_min_table_valid_ratio=float(
+            os.getenv("PARSER_MIN_TABLE_VALID_RATIO", "0.80")
+        ),
+        parser_require_picture_crops=_env_bool(
+            "PARSER_REQUIRE_PICTURE_CROPS", False
+        ),
+        docling_execution_mode=os.getenv(
+            "DOCLING_EXECUTION_MODE", "local"
+        ).strip().lower(),
+        docling_serve_url=os.getenv("DOCLING_SERVE_URL", "").strip() or None,
+        docling_serve_api_key=os.getenv("DOCLING_SERVE_API_KEY", "").strip(),
+        docling_do_ocr=_env_bool("DOCLING_DO_OCR", True),
+        docling_ocr_backend=os.getenv(
+            "DOCLING_OCR_BACKEND", "onnxruntime"
+        ).strip().lower(),
+        docling_ocr_languages=os.getenv(
+            "DOCLING_OCR_LANGUAGES", "english"
+        ).strip(),
+        docling_force_full_page_ocr=_env_bool(
+            "DOCLING_FORCE_FULL_PAGE_OCR", False
+        ),
+        docling_ocr_bitmap_area_threshold=float(
+            os.getenv("DOCLING_OCR_BITMAP_AREA_THRESHOLD", "0.05")
+        ),
+        docling_do_table_structure=_env_bool("DOCLING_DO_TABLE_STRUCTURE", True),
+        docling_table_mode=os.getenv("DOCLING_TABLE_MODE", "accurate").strip(),
+        docling_generate_page_images=_env_bool(
+            "DOCLING_GENERATE_PAGE_IMAGES", True
+        ),
+        docling_generate_picture_images=_env_bool(
+            "DOCLING_GENERATE_PICTURE_IMAGES", True
+        ),
+        docling_images_scale=float(os.getenv("DOCLING_IMAGES_SCALE", "1.0")),
+        docling_ocr_batch_size=int(os.getenv("DOCLING_OCR_BATCH_SIZE", "1")),
+        docling_layout_batch_size=int(os.getenv("DOCLING_LAYOUT_BATCH_SIZE", "1")),
+        docling_table_batch_size=int(os.getenv("DOCLING_TABLE_BATCH_SIZE", "1")),
+        docling_queue_max_size=int(os.getenv("DOCLING_QUEUE_MAX_SIZE", "2")),
+        docling_page_batch_size=int(os.getenv("DOCLING_PAGE_BATCH_SIZE", "1")),
+        docling_num_threads=int(os.getenv("DOCLING_NUM_THREADS", "2")),
+        docling_device=os.getenv("DOCLING_DEVICE", "auto").strip().lower() or "auto",
+        docling_heading_hierarchy=_env_bool("DOCLING_HEADING_HIERARCHY", True),
+        docling_timeout_seconds=int(os.getenv("DOCLING_TIMEOUT_SECONDS", "900")),
+        docling_max_pages=int(os.getenv("DOCLING_MAX_PAGES", "1000")),
+        docling_max_file_mb=int(os.getenv("DOCLING_MAX_FILE_MB", "2048")),
+        docling_model_artifact_revision=os.getenv(
+            "DOCLING_MODEL_ARTIFACT_REVISION", ""
+        ).strip(),
+        mineru_execution_mode=os.getenv(
+            "MINERU_EXECUTION_MODE", "service"
+        ).strip().lower(),
+        mineru_api_url=os.getenv("MINERU_API_URL", "").strip() or None,
+        mineru_api_token=os.getenv("MINERU_API_TOKEN", "").strip(),
+        mineru_command=os.getenv("MINERU_COMMAND", "mineru").strip() or "mineru",
+        mineru_backend=os.getenv("MINERU_BACKEND", "pipeline").strip() or "pipeline",
+        mineru_timeout_seconds=int(os.getenv("MINERU_TIMEOUT_SECONDS", "1800")),
         artifact_dir=Path(os.getenv("RAG_ARTIFACT_DIR", "ingestion_artifacts")),
         bedrock_visual_model_id=os.getenv(
             "BEDROCK_VISUAL_MODEL_ID",
@@ -178,42 +323,169 @@ def load_settings() -> Settings:
     )
 
 
-def _openai_headers(api_key: str) -> dict:
-    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+def get_vectorstore(settings: Settings, embedder: Embeddings) -> Chroma:
+    from local_embeddings import embedder_signature, signature_json
 
-
-def check_openai_connectivity(settings: Settings) -> None:
-    base_url = (settings.openai_base_url or "https://api.openai.com/v1").rstrip("/")
-    try:
-        response = requests.get(
-            f"{base_url}/models",
-            headers=_openai_headers(settings.openai_api_key),
-            timeout=10,
-        )
-        if response.status_code >= 400:
-            detail = response.text[:300]
-            raise RuntimeError(f"OpenAI connectivity check failed ({response.status_code}): {detail}")
-    except requests.RequestException as exc:
-        raise RuntimeError(f"OpenAI connectivity check failed: {exc}") from exc
-
-
-def get_vectorstore(settings: Settings, embedder: OpenAIEmbeddings) -> Chroma:
-    return Chroma(
+    signature = signature_json(embedder_signature(embedder))
+    vectorstore = Chroma(
         collection_name=settings.collection_name,
         persist_directory=str(settings.chroma_dir),
         embedding_function=embedder,
+        collection_metadata={
+            "hnsw:space": "cosine",
+            "orextractor_embedding_signature": signature,
+        },
     )
+    collection = vectorstore._collection
+    metadata = dict(collection.metadata or {})
+    recorded = metadata.get("orextractor_embedding_signature")
+    count = int(collection.count())
+    if count and recorded != signature:
+        recorded_label = recorded or "legacy/unknown"
+        raise RuntimeError(
+            "The existing Chroma collection uses an incompatible embedding "
+            f"space ({recorded_label}). The configured backend resolves to "
+            f"{signature}. Rebuild it with: python rag_app.py ingest --rebuild "
+            "--parser docling --fallback mineru"
+        )
+    if not count and recorded != signature:
+        # Chroma rejects hnsw:* keys on modify even when their value is
+        # unchanged. Omitting them preserves the collection's configured
+        # distance function while updating mutable identity metadata.
+        mutable_metadata = {
+            key: value
+            for key, value in metadata.items()
+            if not str(key).startswith("hnsw:")
+        }
+        mutable_metadata["orextractor_embedding_signature"] = signature
+        collection.modify(metadata=mutable_metadata)
+    return vectorstore
 
 
-def get_embedder(settings: Settings) -> OpenAIEmbeddings:
+_EMBEDDER_INSTANCES: dict[tuple, Embeddings] = {}
+
+
+def _openai_embedder(settings: Settings) -> OpenAIEmbeddings:
+    if not settings.openai_api_key:
+        raise RuntimeError(
+            "OPENAI_API_KEY is not configured, so the OpenAI embedding "
+            "fallback is unavailable."
+        )
     kwargs = {
         "api_key": settings.openai_api_key,
         "model": settings.embed_model,
         "chunk_size": settings.embed_batch_size,
     }
+    if settings.openai_embed_dimensions > 0:
+        kwargs["dimensions"] = settings.openai_embed_dimensions
     if settings.openai_base_url:
         kwargs["base_url"] = settings.openai_base_url
-    return _CachedOpenAIEmbeddings(**kwargs)
+    embedder = _CachedOpenAIEmbeddings(**kwargs)
+    from local_embeddings import embedding_signature
+
+    object.__setattr__(
+        embedder,
+        "orextractor_embedding_signature",
+        embedding_signature(
+            provider="openai",
+            model=settings.embed_model,
+            dimensions=settings.openai_embed_dimensions,
+            normalize=True,
+        ),
+    )
+    return embedder
+
+
+def get_embedder(settings: Settings) -> Embeddings:
+    from local_embeddings import QwenLocalEmbeddings, embedder_signature
+
+    provider = str(settings.embedding_provider).strip().lower()
+    fallback = str(settings.embedding_fallback_provider).strip().lower()
+    valid = {"qwen", "openai", ""}
+    if provider not in valid - {""}:
+        raise ValueError(
+            f"EMBEDDING_PROVIDER must be qwen or openai, got {provider!r}."
+        )
+    if fallback not in valid:
+        raise ValueError(
+            "EMBEDDING_FALLBACK_PROVIDER must be openai, qwen, or empty, "
+            f"got {fallback!r}."
+        )
+    cache_key = (
+        provider,
+        fallback,
+        settings.local_embed_model,
+        settings.local_embed_device,
+        settings.local_embed_batch_size,
+        settings.local_embed_max_length,
+        settings.local_embed_dimensions,
+        settings.local_embed_dtype,
+        settings.local_embed_query_instruction,
+        settings.embed_model,
+        settings.openai_embed_dimensions,
+        settings.openai_base_url,
+        hashlib.sha256(settings.openai_api_key.encode()).hexdigest()[:12],
+    )
+    cached = _EMBEDDER_INSTANCES.get(cache_key)
+    if cached is not None:
+        signature = embedder_signature(cached)
+        settings.resolved_embedding_provider = signature["provider"]
+        settings.resolved_embedding_model = signature["model"]
+        settings.resolved_embedding_signature = signature
+        return cached
+
+    def create(selected: str) -> Embeddings:
+        if selected == "openai":
+            remote = _openai_embedder(settings)
+            # Validate credentials/connectivity before a rebuild can remove an
+            # existing collection. This query is retained in the process cache.
+            remote.embed_query("ORExtractor embedding backend health check")
+            return remote
+        if selected == "qwen":
+            local = QwenLocalEmbeddings(
+                model_name=settings.local_embed_model,
+                device=settings.local_embed_device,
+                batch_size=settings.local_embed_batch_size,
+                max_length=settings.local_embed_max_length,
+                dimensions=settings.local_embed_dimensions,
+                query_instruction=settings.local_embed_query_instruction,
+                dtype=settings.local_embed_dtype,
+            )
+            # Eager health check: fallback is allowed only before an index is
+            # opened or built, never after vectors from another space exist.
+            local.embed_query("ORExtractor embedding backend health check")
+            return local
+        raise ValueError(f"Unsupported embedding provider: {selected!r}")
+
+    try:
+        embedder = create(provider)
+    except Exception as primary_error:
+        if not fallback or fallback == provider:
+            raise
+        try:
+            embedder = create(fallback)
+        except Exception as fallback_error:
+            raise RuntimeError(
+                f"Primary embedding provider {provider!r} failed: "
+                f"{primary_error}. Fallback {fallback!r} also failed: "
+                f"{fallback_error}."
+            ) from fallback_error
+        print(
+            f"Warning: embedding provider {provider!r} failed ({primary_error}); "
+            f"using startup fallback {fallback!r}.",
+        )
+
+    signature = embedder_signature(embedder)
+    settings.resolved_embedding_provider = signature["provider"]
+    settings.resolved_embedding_model = signature["model"]
+    settings.resolved_embedding_signature = signature
+    _EMBEDDER_INSTANCES[cache_key] = embedder
+    print(
+        "Embedding backend: "
+        f"{signature['provider']} / {signature['model']} "
+        f"({signature['dimensions']} dimensions)"
+    )
+    return embedder
 
 
 def get_chat_model(
@@ -237,14 +509,95 @@ def get_chat_model(
     )
 
 
-def iter_pdf_paths(knowledge_dir: Path, extra_dirs: Optional[List[Path]] = None) -> Iterable[Path]:
+def _pdf_roots(
+    knowledge_dir: Path,
+    extra_dirs: Optional[List[Path]] = None,
+) -> List[Path]:
+    return [Path(knowledge_dir), *(Path(path) for path in (extra_dirs or []))]
+
+
+def iter_pdf_paths(
+    knowledge_dir: Path,
+    extra_dirs: Optional[List[Path]] = None,
+) -> Iterable[Path]:
+    """Yield every PDF below the configured roots, recursively and once."""
     if not knowledge_dir.exists():
         raise FileNotFoundError(f"Knowledge directory does not exist: {knowledge_dir}")
-    paths: List[Path] = list(knowledge_dir.glob("*.pdf"))
-    for d in (extra_dirs or []):
-        if d.exists():
-            paths.extend(d.glob("*.pdf"))
-    return sorted(set(paths), key=lambda p: p.name)
+
+    paths: dict[str, Path] = {}
+    for root in _pdf_roots(knowledge_dir, extra_dirs):
+        if not root.exists():
+            continue
+        # os.walk is intentional: pathlib.rglob().is_file() can silently omit
+        # valid PDFs whose absolute Windows paths exceed the legacy MAX_PATH.
+        for directory, _, filenames in os.walk(root):
+            for filename in filenames:
+                path = Path(directory) / filename
+                if path.suffix.casefold() != ".pdf":
+                    continue
+                resolved = path.resolve()
+                paths.setdefault(os.path.normcase(str(resolved)), path)
+
+    return sorted(
+        paths.values(),
+        key=lambda path: pdf_source_id(path, knowledge_dir, extra_dirs).casefold(),
+    )
+
+
+def pdf_source_id(
+    pdf_path: Path,
+    knowledge_dir: Path,
+    extra_dirs: Optional[List[Path]] = None,
+) -> str:
+    """Return the stable Chroma/source identifier for a discovered PDF."""
+    resolved_pdf = Path(pdf_path).resolve()
+    matching_roots: List[Path] = []
+    for root in _pdf_roots(knowledge_dir, extra_dirs):
+        try:
+            resolved_pdf.relative_to(root.resolve())
+            matching_roots.append(root.resolve())
+        except ValueError:
+            continue
+    if not matching_roots:
+        return Path(pdf_path).name
+
+    # Prefer the most specific root when configured roots overlap.
+    root = max(matching_roots, key=lambda candidate: len(candidate.parts))
+    return resolved_pdf.relative_to(root).as_posix()
+
+
+def filesystem_path(path: Path) -> Path:
+    """Return a Windows extended path when the resolved path exceeds MAX_PATH."""
+    candidate = Path(path)
+    if os.name != "nt":
+        return candidate
+    resolved = candidate.resolve()
+    raw = str(resolved)
+    if raw.startswith("\\\\?\\") or len(raw) < 248:
+        return candidate
+    if raw.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + raw.lstrip("\\"))
+    return Path("\\\\?\\" + raw)
+
+
+def source_output_path(base_dir: Path, source_file: str, suffix: str) -> Path:
+    """Map a safe relative source ID to a mirrored output path."""
+    relative = PurePosixPath(str(source_file).replace("\\", "/"))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"Unsafe source path: {source_file!r}")
+    source_path = Path(*relative.parts)
+    output = Path(base_dir) / source_path.parent / f"{source_path.stem}{suffix}"
+    if os.name == "nt" and len(str(output.resolve())) >= 248:
+        digest = hashlib.sha256(
+            relative.as_posix().encode("utf-8", errors="replace")
+        ).hexdigest()[:16]
+        compact_stem = source_path.stem[:80].rstrip(" .") or "report"
+        output = (
+            Path(base_dir)
+            / "_long_paths"
+            / f"{compact_stem}-{digest}{suffix}"
+        )
+    return output
 
 
 def _question_keywords(question: str) -> set[str]:
@@ -327,32 +680,7 @@ def _add_documents_with_retry(
                 time.sleep(wait_seconds)
 
 
-# ── Ingestion manifest helpers ────────────────────────────────────────────────
-# The manifest is a JSON file stored alongside the Chroma index that maps each
-# PDF filename to a fingerprint (mtime_ns:size).  On the next ingest run, any
-# file whose fingerprint matches is skipped — no re-parsing, no re-embedding.
-
-def _file_fingerprint(path: Path) -> str:
-    s = path.stat()
-    return f"{s.st_mtime_ns}:{s.st_size}"
-
-
-def _load_manifest(chroma_dir: Path) -> dict:
-    p = chroma_dir / "ingest_manifest.json"
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
-def _save_manifest(chroma_dir: Path, manifest: dict) -> None:
-    chroma_dir.mkdir(parents=True, exist_ok=True)
-    (chroma_dir / "ingest_manifest.json").write_text(
-        json.dumps(manifest, indent=2), encoding="utf-8"
-    )
-
-
-_EMBED_CACHE: dict[str, list] = {}
+_EMBED_CACHE: dict[tuple, list] = {}
 
 
 class _CachedOpenAIEmbeddings(OpenAIEmbeddings):
@@ -363,336 +691,15 @@ class _CachedOpenAIEmbeddings(OpenAIEmbeddings):
     """
 
     def embed_query(self, text: str) -> list:  # type: ignore[override]
-        if text not in _EMBED_CACHE:
-            _EMBED_CACHE[text] = super().embed_query(text)
-        return _EMBED_CACHE[text]
-
-
-# ── olmocr prompt (YAML response format, compatible with allenai/olmOCR-7B) ───
-try:
-    from olmocr.prompts import build_no_anchoring_v4_yaml_prompt as _build_olmocr_prompt
-    _OLMOCR_PROMPT: str = _build_olmocr_prompt()
-except Exception:
-    _OLMOCR_PROMPT = (
-        "Below is an image of a page from a document. Extract all visible text in reading order.\n"
-        "Convert tables to HTML (<table>...</table>). Use LaTeX for equations.\n"
-        "Respond with ONLY a YAML document containing exactly these fields:\n"
-        "primary_language: <ISO 639-1 code>\n"
-        "is_rotation_valid: <true or false>\n"
-        "rotation_correction: <0, 90, 180, or 270>\n"
-        "is_table: <true if most of the page is a table>\n"
-        "is_diagram: <true if most of the page is a figure or diagram>\n"
-        "natural_text: |\n"
-        "  <extracted page text>\n"
-    )
-
-
-def _olmocr_render_page_b64(pdf_path: Path, page_num: int, longest_dim: int = 1920) -> str:
-    """Render a PDF page to a base64-encoded PNG using PyMuPDF (no poppler needed)."""
-    import fitz  # PyMuPDF — already a project dependency
-    import base64
-
-    doc = fitz.open(str(pdf_path))
-    try:
-        page = doc[page_num - 1]  # page_num is 1-indexed
-        rect = page.rect
-        scale = longest_dim / max(rect.width, rect.height)
-        mat = fitz.Matrix(scale, scale)
-        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-        png_bytes = pix.tobytes("png")
-    finally:
-        doc.close()
-    return base64.b64encode(png_bytes).decode("utf-8")
-
-
-def _olmocr_parse_yaml_response(raw: str) -> Optional[dict]:
-    """Parse an olmocr YAML response, stripping markdown fences if present."""
-    import yaml
-
-    text = raw.strip()
-    text = re.sub(r"^```(?:yaml)?\s*\n?", "", text, flags=re.I)
-    text = re.sub(r"\n?```\s*$", "", text)
-    try:
-        data = yaml.safe_load(text)
-        return data if isinstance(data, dict) else None
-    except yaml.YAMLError:
-        return None
-
-
-def _olmocr_process_page(
-    client,        # pre-instantiated OpenAI client (shared across the thread pool)
-    model: str,
-    pdf_path: Path,
-    page_num: int,
-) -> Tuple[int, str, bool, bool]:
-    """Call the olmocr-compatible inference server for a single PDF page.
-
-    Returns (page_num, natural_text, is_table, is_diagram).
-    Falls back to empty string on any failure.
-    """
-    try:
-        b64 = _olmocr_render_page_b64(pdf_path, page_num)
-    except Exception as exc:
-        tqdm.write(f"    page {page_num}: render failed — {exc}")
-        return page_num, "", False, False
-
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-                    {"type": "text", "text": _OLMOCR_PROMPT},
-                ],
-            }],
-            temperature=0.1,
-            max_tokens=8192,
+        key = (
+            str(getattr(self, "model", "")),
+            getattr(self, "dimensions", None),
+            str(getattr(self, "openai_api_base", "")),
+            text,
         )
-        raw = resp.choices[0].message.content or ""
-        data = _olmocr_parse_yaml_response(raw)
-        if not data:
-            tqdm.write(f"    page {page_num}: YAML parse failed, raw snippet: {raw[:120]!r}")
-            return page_num, "", False, False
-        return (
-            page_num,
-            data.get("natural_text") or "",
-            bool(data.get("is_table", False)),
-            bool(data.get("is_diagram", False)),
-        )
-    except Exception as exc:
-        tqdm.write(f"    page {page_num}: inference call failed — {exc}")
-        return page_num, "", False, False
-
-
-def _pymupdf_fallback_text(pdf_path: Path) -> dict[int, str]:
-    """Extract text from each page using PyMuPDF's text layer (instant, no GPU)."""
-    import fitz
-
-    result: dict[int, str] = {}
-    try:
-        doc = fitz.open(str(pdf_path))
-        for i, page in enumerate(doc, start=1):
-            text = page.get_text("text").strip()
-            if text:
-                result[i] = text
-        doc.close()
-    except Exception as exc:
-        tqdm.write(f"  PyMuPDF fallback failed: {exc}")
-    return result
-
-
-def _chunk_ocr_text(text: str, chunk_size: int, overlap: int = 0) -> List[str]:
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    if not text:
-        return []
-    paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-    out: List[str] = []
-    buf = ""
-    for p in paras:
-        candidate = f"{buf}\n\n{p}" if buf else p
-        if len(candidate) <= chunk_size:
-            buf = candidate
-        else:
-            if buf:
-                out.append(buf)
-                if overlap:
-                    tail = buf[-overlap:].strip()
-                    next_start = f"{tail}\n\n{p}".strip() if tail else p
-                else:
-                    next_start = p
-                buf = next_start[:chunk_size] if len(next_start) > chunk_size else next_start
-            else:
-                buf = p[:chunk_size] if len(p) > chunk_size else p
-    if buf:
-        out.append(buf)
-    return [c for c in out if c.strip()]
-
-
-def _postprocess_olmocr_page(natural_text: str) -> Tuple[Optional[str], Optional[str]]:
-    """Split olmocr natural_text into (body_text, table_markdown).
-
-    olmocr embeds HTML tables inline inside the page markdown. We extract
-    them as separate table documents (consistent with the pre-olmocr pipeline)
-    and return the remaining prose separately.
-    """
-    tables: List[str] = []
-    body = natural_text
-
-    for m in re.finditer(r"(?is)<table[^>]*>.*?</table>", natural_text):
-        tables.append(_html_table_to_markdown(m.group(0)))
-
-    body = re.sub(r"(?is)<table[^>]*>.*?</table>", "", body)
-    # Drop bare image references  ![alt](path.png)  left by olmocr figure handling
-    body = re.sub(r"!\[.*?\]\([^)]*\.png[^)]*\)", "", body)
-    body = body.strip() or None
-    return body, "\n\n".join(tables) if tables else None
-
-
-def _html_to_text(raw_html: str) -> str:
-    """Flatten a marker HTML block into plain text suitable for chunking."""
-    import html as _htmllib
-
-    text = re.sub(r"(?is)<\s*br\s*/?>", "\n", raw_html)
-    text = re.sub(r"(?is)</\s*(p|div|li|h[1-6]|tr|table)\s*>", "\n", text)
-    text = re.sub(r"(?s)<[^>]+>", " ", text)
-    text = _htmllib.unescape(text)
-    text = re.sub(r"[ \t]+", " ", text)
-    return text.strip()
-
-
-def _html_table_to_markdown(raw_html: str) -> str:
-    """Convert a marker-pdf table HTML block to pipe-delimited markdown.
-
-    The LLM reads tabular columns directly from markdown rather than having to
-    mentally parse HTML tag nesting, reducing grade-misalignment errors and
-    token usage.  Falls back to plain text if no <tr>/<td> rows are found.
-    """
-    import html as _htmllib
-
-    rows: List[List[str]] = []
-    for row_match in re.finditer(r"(?is)<tr[^>]*>(.*?)</tr>", raw_html):
-        cells = re.findall(r"(?is)<t[dh][^>]*>(.*?)</t[dh]>", row_match.group(1))
-        row = []
-        for cell in cells:
-            cell_text = re.sub(r"(?s)<[^>]+>", " ", cell)
-            cell_text = _htmllib.unescape(cell_text)
-            cell_text = re.sub(r"\s+", " ", cell_text).strip()
-            row.append(cell_text.replace("|", "\\|"))
-        if any(row):
-            rows.append(row)
-
-    if not rows:
-        return _html_to_text(raw_html)
-
-    col_count = max(len(r) for r in rows)
-    rows = [r + [""] * (col_count - len(r)) for r in rows]
-    lines: List[str] = []
-    for i, row in enumerate(rows):
-        lines.append("| " + " | ".join(row) + " |")
-        if i == 0:
-            lines.append("|" + "|".join(" --- " for _ in row) + "|")
-    return "\n".join(lines)
-
-
-def parse_pdf_to_documents(
-    pdf_path: Path,
-    chunk_size: int,
-    chunk_overlap: int = 0,
-    settings: Optional["Settings"] = None,
-) -> List[Document]:
-    docs: List[Document] = []
-
-    # ── olmocr path ──────────────────────────────────────────────────────────
-    if settings and settings.olmocr_server_url:
-        import fitz
-
-        tqdm.write("  Converting with olmocr …")
-        try:
-            doc_fitz = fitz.open(str(pdf_path))
-            n_pages = len(doc_fitz)
-            doc_fitz.close()
-        except Exception as exc:
-            tqdm.write(f"  Could not open PDF: {exc}")
-            return []
-
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        from openai import OpenAI as _OAIClient
-
-        # Instantiate once — all worker threads share the HTTP connection pool.
-        olmocr_client = _OAIClient(
-            api_key=settings.olmocr_api_key or "olmocr",
-            base_url=settings.olmocr_server_url,
-            timeout=120.0,
-        )
-
-        page_results: dict[int, Tuple[str, bool, bool]] = {}
-        with ThreadPoolExecutor(max_workers=settings.olmocr_workers) as pool:
-            futs = {
-                pool.submit(
-                    _olmocr_process_page,
-                    olmocr_client,
-                    settings.olmocr_model,
-                    pdf_path,
-                    pn,
-                ): pn
-                for pn in range(1, n_pages + 1)
-            }
-            for fut in as_completed(futs):
-                pn, text, is_tbl, is_diag = fut.result()
-                page_results[pn] = (text, is_tbl, is_diag)
-
-        table_items: List[Tuple[str, int]] = []
-        for page_no in sorted(page_results):
-            natural_text, is_tbl, is_diag = page_results[page_no]
-            if not natural_text:
-                continue
-            body, tables_md = _postprocess_olmocr_page(natural_text)
-            if tables_md:
-                table_items.append((tables_md, page_no))
-            if body and not is_diag:
-                for c_idx, chunk in enumerate(_chunk_ocr_text(body, chunk_size, chunk_overlap)):
-                    docs.append(Document(
-                        page_content=chunk,
-                        metadata={
-                            "source": pdf_path.name,
-                            "page": page_no,
-                            "chunk": c_idx,
-                            "type": "text",
-                            "ni_item": 0,
-                            "section_title": "",
-                        },
-                    ))
-
-        for t_idx, (table_content, page_no) in enumerate(table_items):
-            docs.append(Document(
-                page_content=table_content,
-                metadata={
-                    "source": pdf_path.name,
-                    "page": page_no,
-                    "chunk": 1000 + t_idx,
-                    "type": "table",
-                    "ni_item": 0,
-                    "section_title": "",
-                },
-            ))
-
-    # ── PyMuPDF fallback (no olmocr server configured) ───────────────────────
-    else:
-        tqdm.write("  OLMOCR_SERVER_URL not set — using PyMuPDF text-layer fallback")
-        page_texts = _pymupdf_fallback_text(pdf_path)
-        if not page_texts:
-            tqdm.write(f"  No extractable text in {pdf_path.name}")
-            return []
-        for page_no, text in sorted(page_texts.items()):
-            for c_idx, chunk in enumerate(_chunk_ocr_text(text, chunk_size, chunk_overlap)):
-                docs.append(Document(
-                    page_content=chunk,
-                    metadata={
-                        "source": pdf_path.name,
-                        "page": page_no,
-                        "chunk": c_idx,
-                        "type": "text",
-                        "ni_item": 0,
-                        "section_title": "",
-                    },
-                ))
-
-    if not docs:
-        tqdm.write(f"  No content extracted from {pdf_path.name}")
-        return []
-
-    from chapter_index import (
-        build_chapter_index_from_documents,
-        save_chapter_index,
-        tag_documents_with_items,
-    )
-
-    chapters = build_chapter_index_from_documents(docs)
-    docs = tag_documents_with_items(docs, chapters)
-    extracted_dir = settings.extracted_dir if settings else Path(os.getenv("RAG_EXTRACTED_DIR", "extracted_data"))
-    save_chapter_index(extracted_dir, pdf_path.name, chapters)
-    return docs
+        if key not in _EMBED_CACHE:
+            _EMBED_CACHE[key] = super().embed_query(text)
+        return _EMBED_CACHE[key]
 
 
 def ingest(
@@ -705,115 +712,152 @@ def ingest(
     reprocess_visuals: bool = False,
     backend: Optional[str] = None,
 ):
-    """Ingest PDFs into Chroma. Delegates to Unstructured pipeline when configured."""
-    chosen = (backend or settings.ingestion_backend or "olmocr").lower()
-    if chosen == "unstructured":
-        from ingestion.pipeline import IngestionPipeline
+    """Ingest PDFs into Chroma through the selected parser pipeline."""
+    from ingestion.pipeline import IngestionPipeline
 
-        pipeline = IngestionPipeline(
-            settings,
-            enable_visuals=enable_visuals,
-            partition_only=partition_only,
-        )
-        return pipeline.ingest_all(
-            rebuild=rebuild,
-            only_file=only_file,
-            reprocess_visuals=reprocess_visuals,
-        )
-
-    return _ingest_olmocr(settings, rebuild=rebuild, only_file=only_file)
-
-
-def _ingest_olmocr(
-    settings: Settings,
-    rebuild: bool = False,
-    *,
-    only_file: Optional[str] = None,
-) -> None:
-    chroma_client = chromadb.PersistentClient(path=str(settings.chroma_dir))
-    if rebuild:
-        try:
-            chroma_client.delete_collection(name=settings.collection_name)
-            print("Rebuilt vector index (old records removed).")
-        except Exception as exc:
-            print(f"Warning: could not delete collection '{settings.collection_name}': {exc}")
-    embedder = get_embedder(settings)
-    vectorstore = get_vectorstore(settings, embedder)
-
-    pdf_paths = list(iter_pdf_paths(settings.knowledge_dir, settings.extra_pdf_dirs))
-    if only_file:
-        pdf_paths = [p for p in pdf_paths if p.name == only_file or p.stem == Path(only_file).stem]
-    if not pdf_paths:
-        dirs = [settings.knowledge_dir] + list(settings.extra_pdf_dirs)
-        print(f"No PDFs found in {', '.join(str(d) for d in dirs)}")
-        return None
-
-    # Load the change-detection manifest; wipe it when rebuilding from scratch.
-    manifest = {} if rebuild else _load_manifest(settings.chroma_dir)
-
-    upserted = 0
-    skipped = 0
-    pdf_bar = tqdm(pdf_paths, desc="Ingesting PDFs", unit="pdf", dynamic_ncols=True)
-    for pdf_path in pdf_bar:
-        pdf_bar.set_postfix(file=pdf_path.name[:40])
-
-        fp = _file_fingerprint(pdf_path)
-        if manifest.get(pdf_path.name) == fp:
-            tqdm.write(f"\nSkipping {pdf_path.name} (unchanged since last ingest)")
-            skipped += 1
-            continue
-
-        tqdm.write(f"\nParsing {pdf_path.name}...")
-        docs = parse_pdf_to_documents(pdf_path, settings.chunk_size, settings.chunk_overlap, settings)
-        if not docs:
-            tqdm.write(f"  No extractable content found in {pdf_path.name}.")
-            continue
-
-        ids: List[str] = []
-        for d in docs:
-            page_num = d.metadata.get("page", -1)
-            if not isinstance(page_num, int):
-                page_num = -1
-            chunk_idx = d.metadata.get("chunk", 0)
-            if not isinstance(chunk_idx, int):
-                chunk_idx = 0
-            ids.append(build_doc_id(pdf_path.name, page_num, chunk_idx, d.page_content))
-        _add_documents_with_retry(
-            vectorstore=vectorstore,
-            docs=docs,
-            ids=ids,
-            batch_size=settings.upsert_batch_size,
-        )
-        upserted += len(ids)
-        manifest[pdf_path.name] = fp
-        _save_manifest(settings.chroma_dir, manifest)
-        tqdm.write(f"  Done — {len(ids)} chunks upserted.")
-
-    parts = [f"Upserted {upserted} chunks"]
-    if skipped:
-        parts.append(f"skipped {skipped} unchanged")
-    print(f"\nIngestion complete. {', '.join(parts)} in '{settings.collection_name}'.")
-    return None
+    chosen = (backend or settings.ingestion_backend or "docling").lower()
+    if chosen not in {"docling", "mineru"}:
+        raise ValueError(f"Parser must be 'docling' or 'mineru', got {chosen!r}")
+    settings.ingestion_backend = chosen
+    settings.parser_primary = chosen
+    if chosen == "mineru":
+        settings.force_parser = "mineru"
+    pipeline = IngestionPipeline(
+        settings,
+        enable_visuals=enable_visuals,
+        partition_only=partition_only,
+    )
+    return pipeline.ingest_all(
+        rebuild=rebuild,
+        only_file=only_file,
+        reprocess_visuals=reprocess_visuals,
+    )
 
 
 def inspect_elements(settings: Settings, pdf_file: str) -> dict:
-    """Partition a PDF with Unstructured and print element diagnostics."""
+    """Parse a PDF and print canonical element and routing diagnostics."""
     from ingestion.pipeline import IngestionPipeline
 
     pdf_paths = list(iter_pdf_paths(settings.knowledge_dir, settings.extra_pdf_dirs))
-    matches = [p for p in pdf_paths if p.name == pdf_file or p.stem == Path(pdf_file).stem]
+    requested = str(pdf_file).replace("\\", "/").casefold()
+    matches = [
+        p
+        for p in pdf_paths
+        if pdf_source_id(
+            p,
+            settings.knowledge_dir,
+            settings.extra_pdf_dirs,
+        ).casefold()
+        == requested
+    ]
+    if not matches:
+        matches = [
+            p
+            for p in pdf_paths
+            if p.name.casefold() == Path(pdf_file).name.casefold()
+            or p.stem.casefold() == Path(pdf_file).stem.casefold()
+        ]
     if not matches:
         path = Path(pdf_file)
         if path.exists():
             matches = [path]
     if not matches:
         raise FileNotFoundError(f"PDF not found: {pdf_file}")
+    if len(matches) > 1:
+        choices = ", ".join(
+            pdf_source_id(p, settings.knowledge_dir, settings.extra_pdf_dirs)
+            for p in matches
+        )
+        raise ValueError(f"Ambiguous PDF name {pdf_file!r}; use one of: {choices}")
     pipeline = IngestionPipeline(settings, enable_visuals=False, partition_only=True)
-    return pipeline.inspect_elements(matches[0])
+    source_file = pdf_source_id(
+        matches[0],
+        settings.knowledge_dir,
+        settings.extra_pdf_dirs,
+    )
+    return pipeline.inspect_elements(
+        filesystem_path(matches[0]),
+        source_file=source_file,
+        artifact_dir=source_output_path(settings.artifact_dir, source_file, ""),
+    )
+
+
+def compare_parsers(settings: Settings, pdf_file: str) -> dict:
+    """Run Docling and MinerU diagnostically without writing production vectors."""
+    from copy import copy
+
+    from ingestion.parsers.router import get_parser_router
+
+    pdf_paths = list(iter_pdf_paths(settings.knowledge_dir, settings.extra_pdf_dirs))
+    requested = str(pdf_file).replace("\\", "/").casefold()
+    matches = [
+        p
+        for p in pdf_paths
+        if pdf_source_id(
+            p,
+            settings.knowledge_dir,
+            settings.extra_pdf_dirs,
+        ).casefold()
+        == requested
+    ]
+    if not matches:
+        matches = [
+            p
+            for p in pdf_paths
+            if p.name.casefold() == Path(pdf_file).name.casefold()
+            or p.stem.casefold() == Path(pdf_file).stem.casefold()
+        ]
+    direct = Path(pdf_file)
+    if not matches and direct.exists():
+        matches = [direct]
+    if not matches:
+        raise FileNotFoundError(f"PDF not found: {pdf_file}")
+    if len(matches) > 1:
+        choices = ", ".join(
+            pdf_source_id(p, settings.knowledge_dir, settings.extra_pdf_dirs)
+            for p in matches
+        )
+        raise ValueError(f"Ambiguous PDF name {pdf_file!r}; use one of: {choices}")
+
+    comparison: dict[str, dict] = {}
+    source_file = pdf_source_id(
+        matches[0],
+        settings.knowledge_dir,
+        settings.extra_pdf_dirs,
+    )
+    for parser_name in ("docling", "mineru"):
+        diagnostic = copy(settings)
+        diagnostic.force_parser = parser_name
+        diagnostic.parser_primary = parser_name
+        diagnostic.parser_fallback_enabled = False
+        result = get_parser_router(diagnostic).parse(
+            filesystem_path(matches[0]),
+            source_file=source_file,
+            artifact_dir=source_output_path(
+                diagnostic.artifact_dir,
+                source_file,
+                "",
+            ),
+        )
+        comparison[parser_name] = {
+            "status": result.status,
+            "version": result.parser_version,
+            "duration_ms": result.duration_ms,
+            "page_count": result.page_count,
+            "elements": len(result.elements),
+            "quality": result.quality.model_dump(mode="json"),
+            "errors": result.errors,
+            "artifacts": result.artifact_paths,
+        }
+    return {"file": source_file, "parsers": comparison}
 
 def reindex_chapters(settings: Settings, vectorstore: Chroma) -> None:
-    """Re-parse PDFs to rebuild chapter indexes and patch chunk ni_item metadata."""
-    from chapter_index import reindex_chapters_for_pdf
+    """Rebuild chapter indexes directly from documents already in Chroma."""
+    from chapter_index import (
+        build_chapter_index_from_documents,
+        save_chapter_index,
+        tag_documents_with_items,
+    )
 
     pdf_paths = list(iter_pdf_paths(settings.knowledge_dir, settings.extra_pdf_dirs))
     if not pdf_paths:
@@ -822,28 +866,38 @@ def reindex_chapters(settings: Settings, vectorstore: Chroma) -> None:
 
     updated = 0
     for pdf_path in tqdm(pdf_paths, desc="Reindexing chapters", unit="pdf"):
-        parse_fn = lambda p, cs: parse_pdf_to_documents(p, cs, settings.chunk_overlap, settings)
-        chapters, docs = reindex_chapters_for_pdf(
+        source_file = pdf_source_id(
             pdf_path,
-            settings.chunk_size,
-            parse_fn,
-            settings.extracted_dir,
+            settings.knowledge_dir,
+            settings.extra_pdf_dirs,
         )
-        if not docs:
+        try:
+            existing = vectorstore._collection.get(
+                where={"source": source_file},
+                include=["documents", "metadatas"],
+            )
+        except Exception as exc:
+            tqdm.write(f"  {source_file}: could not read Chroma records ({exc})")
             continue
-        ids: List[str] = []
-        metadatas: List[dict] = []
-        for d in docs:
-            page_num = int(d.metadata.get("page", -1) or -1)
-            chunk_idx = int(d.metadata.get("chunk", 0) or 0)
-            ids.append(build_doc_id(pdf_path.name, page_num, chunk_idx, d.page_content))
-            metadatas.append(dict(d.metadata))
+        ids = list(existing.get("ids") or [])
+        texts = list(existing.get("documents") or [])
+        raw_metadatas = list(existing.get("metadatas") or [])
+        if not ids or len(ids) != len(texts):
+            continue
+        docs = [
+            Document(page_content=text, metadata=dict(metadata or {}))
+            for text, metadata in zip(texts, raw_metadatas)
+        ]
+        chapters = build_chapter_index_from_documents(docs)
+        docs = tag_documents_with_items(docs, chapters)
+        save_chapter_index(settings.extracted_dir, source_file, chapters)
+        metadatas = [dict(document.metadata) for document in docs]
         try:
             vectorstore._collection.update(ids=ids, metadatas=metadatas)
             updated += len(ids)
-            tqdm.write(f"  {pdf_path.name}: {len(chapters)} chapters, {len(ids)} chunks tagged")
+            tqdm.write(f"  {source_file}: {len(chapters)} chapters, {len(ids)} chunks tagged")
         except Exception as exc:
-            tqdm.write(f"  {pdf_path.name}: metadata update failed ({exc}); re-ingest recommended")
+            tqdm.write(f"  {source_file}: metadata update failed ({exc}); re-ingest recommended")
 
     print(f"Chapter reindex complete. Updated metadata on {updated} chunks.")
 
@@ -1116,11 +1170,21 @@ def run_extract_spatial(
     if target_file:
         targets = [target_file]
     else:
-        targets = [p.name for p in iter_pdf_paths(settings.knowledge_dir, settings.extra_pdf_dirs)]
+        targets = [
+            pdf_source_id(
+                path,
+                settings.knowledge_dir,
+                settings.extra_pdf_dirs,
+            )
+            for path in iter_pdf_paths(
+                settings.knowledge_dir,
+                settings.extra_pdf_dirs,
+            )
+        ]
 
     done = 0
     for name in targets:
-        out_file = settings.spatial_dir / f"{Path(name).stem}.json"
+        out_file = source_output_path(settings.spatial_dir, name, ".json")
         if out_file.exists():
             print(f"Already extracted (delete {out_file} to redo), skipping: {name}")
             continue
@@ -1153,7 +1217,7 @@ def run_extract(
         return
 
     if target_file:
-        out_file = settings.extracted_dir / f"{Path(target_file).stem}.json"
+        out_file = source_output_path(settings.extracted_dir, target_file, ".json")
         if out_file.exists():
             print(f"Already extracted, skipping: {target_file}")
             return
@@ -1171,9 +1235,9 @@ def run_extract(
 
 def save_extraction(settings: Settings, report) -> Path:
     """Persist a NI43101Report model to extracted_data/{stem}.json."""
-    settings.extracted_dir.mkdir(parents=True, exist_ok=True)
-    stem = Path(report.source_file).stem if report.source_file else "report"
-    out_path = settings.extracted_dir / f"{stem}.json"
+    source_file = report.source_file or "report"
+    out_path = source_output_path(settings.extracted_dir, source_file, ".json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     return out_path
 
@@ -1181,8 +1245,8 @@ def save_extraction(settings: Settings, report) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "NI 43-101 RAG + structured extraction with olmocr/Unstructured + OpenAI embeddings "
-            "+ Claude via AWS Bedrock + Chroma."
+            "NI 43-101 RAG with Docling primary parsing, MinerU fallback, "
+            "LangChain, Claude Haiku, LangSmith, and Chroma."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1199,15 +1263,32 @@ def parse_args() -> argparse.Namespace:
         help="Ingest a single PDF by filename.",
     )
     ingest_parser.add_argument(
-        "--backend",
-        choices=["olmocr", "unstructured"],
+        "--parser",
+        choices=["docling", "mineru"],
         default=None,
-        help="Override INGESTION_BACKEND for this run.",
+        help="Override the primary parser for this run.",
+    )
+    ingest_parser.add_argument(
+        "--fallback",
+        choices=["mineru", "none"],
+        default=None,
+        help="Select the quality-gated fallback parser.",
+    )
+    ingest_parser.add_argument(
+        "--no-fallback",
+        action="store_true",
+        help="Retain degraded primary output instead of invoking MinerU.",
+    )
+    ingest_parser.add_argument(
+        "--force-parser",
+        choices=["docling", "mineru"],
+        default=None,
+        help="Run exactly one parser and bypass fallback routing.",
     )
     ingest_parser.add_argument(
         "--no-visual-enrichment",
         action="store_true",
-        help="Skip Bedrock visual enrichment (unstructured backend).",
+        help="Skip Bedrock/Claude Haiku visual enrichment.",
     )
     ingest_parser.add_argument(
         "--partition-only",
@@ -1225,6 +1306,15 @@ def parse_args() -> argparse.Namespace:
         help="Partition a PDF and print element / NI Item diagnostics.",
     )
     inspect_parser.add_argument(
+        "--file",
+        required=True,
+        help="PDF filename (in knowledge dirs) or path.",
+    )
+    compare_parser = subparsers.add_parser(
+        "compare-parsers",
+        help="Benchmark Docling and MinerU without writing vectors.",
+    )
+    compare_parser.add_argument(
         "--file",
         required=True,
         help="PDF filename (in knowledge dirs) or path.",
@@ -1259,8 +1349,18 @@ def main() -> int:
     try:
         settings = load_settings()
         if args.command == "ingest":
-            if not args.partition_only:
-                check_openai_connectivity(settings)
+            selected_parser = args.force_parser or args.parser
+            if selected_parser:
+                settings.parser_primary = selected_parser
+                settings.ingestion_backend = selected_parser
+            if args.force_parser:
+                settings.force_parser = args.force_parser
+                settings.parser_fallback_enabled = False
+            if args.fallback:
+                settings.parser_fallback = "" if args.fallback == "none" else args.fallback
+                settings.parser_fallback_enabled = args.fallback != "none"
+            if args.no_fallback:
+                settings.parser_fallback_enabled = False
             ingest(
                 settings,
                 rebuild=args.rebuild,
@@ -1268,12 +1368,15 @@ def main() -> int:
                 enable_visuals=not args.no_visual_enrichment,
                 partition_only=args.partition_only,
                 reprocess_visuals=args.reprocess_visuals,
-                backend=args.backend,
+                backend=selected_parser,
             )
         elif args.command == "inspect-elements":
             import json
 
             info = inspect_elements(settings, args.file)
+            print(json.dumps(info, indent=2))
+        elif args.command == "compare-parsers":
+            info = compare_parsers(settings, args.file)
             print(json.dumps(info, indent=2))
         else:
             embedder = get_embedder(settings)

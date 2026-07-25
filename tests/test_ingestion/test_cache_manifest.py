@@ -4,11 +4,16 @@ from pathlib import Path
 from ingestion.cache import (
     EnrichmentCache,
     build_manifest_entry,
-    load_partition_cache,
-    save_partition_cache,
+    load_parser_cache,
+    save_parser_cache,
     should_skip_pdf,
 )
-from ingestion.models import PIPELINE_VERSION, ElementRecord
+from ingestion.models import (
+    PIPELINE_VERSION,
+    ElementRecord,
+    ParserQualityReport,
+    ParserResult,
+)
 
 
 class _Settings:
@@ -16,8 +21,14 @@ class _Settings:
     chunk_size = 1400
     chunk_overlap = 150
     embed_model = "text-embedding-3-small"
-    unstructured_provider = "local"
-    unstructured_strategy = "hi_res"
+    resolved_embedding_signature = {
+        "provider": "qwen",
+        "model": "Qwen/Qwen3-Embedding-0.6B",
+        "dimensions": 1024,
+        "normalize": True,
+    }
+    ingestion_backend = "docling"
+    parser_primary = "docling"
     bedrock_visual_confidence_threshold = 0.85
     visual_reconstruct_charts = True
     visual_reconstruct_diagrams = True
@@ -53,8 +64,12 @@ def test_manifest_invalidation_on_pipeline_version(tmp_path):
         table_count=2,
         indexed_chunk_count=5,
         failed_element_ids=[],
-        partitioner="unstructured-local",
-        partition_strategy="hi_res",
+        parser_result=ParserResult(
+            source_file=pdf.name,
+            parser="docling",
+            parser_version="test",
+            quality=ParserQualityReport(score=1.0),
+        ),
     )
     assert entry["pipeline_version"] == PIPELINE_VERSION
     assert should_skip_pdf(entry, pdf, settings) is True
@@ -63,13 +78,16 @@ def test_manifest_invalidation_on_pipeline_version(tmp_path):
     entry2["pipeline_version"] = "1"
     assert should_skip_pdf(entry2, pdf, settings) is False
 
-    # Legacy fingerprint string still skips when mtime/size match
+    # Legacy fingerprints lack an embedding signature and must be rebuilt.
     from ingestion.cache import fingerprint_legacy
 
-    assert should_skip_pdf(fingerprint_legacy(pdf), pdf, settings) is True
+    assert should_skip_pdf(fingerprint_legacy(pdf), pdf, settings) is False
 
     entry3 = dict(entry)
-    entry3["partitioner"] = "unstructured-api"
+    entry3["parser_policy"] = {
+        **entry3["parser_policy"],
+        "primary": "mineru",
+    }
     assert should_skip_pdf(entry3, pdf, settings) is False
 
     entry4 = dict(entry)
@@ -77,31 +95,35 @@ def test_manifest_invalidation_on_pipeline_version(tmp_path):
     assert should_skip_pdf(entry4, pdf, settings) is False
 
 
-def test_partition_cache_roundtrip_and_source_invalidation(tmp_path):
-    class _Partitioner:
-        provider_name = "unstructured-local"
-        strategy = "hi_res"
-        version = "test-version"
+def test_parser_cache_roundtrip_and_source_invalidation(tmp_path):
+    class _Parser:
+        def cache_signature(self):
+            return {"parser": "docling", "version": "test-version"}
 
     pdf = tmp_path / "r.pdf"
     pdf.write_bytes(b"%PDF first")
     artifact_dir = tmp_path / "artifacts"
-    element = ElementRecord(
-        element_id="n1",
+    result = ParserResult(
         source_file="r.pdf",
-        category="NarrativeText",
-        text="cached",
+        parser="docling",
+        parser_version="test-version",
+        elements=[
+            ElementRecord(
+                element_id="n1",
+                source_file="r.pdf",
+                category="NarrativeText",
+                text="cached",
+                parser="docling",
+            )
+        ],
+        quality=ParserQualityReport(score=1.0),
     )
-    save_partition_cache(
-        artifact_dir, pdf, _Settings(), _Partitioner(), [element]
-    )
-    cached = load_partition_cache(
-        artifact_dir, pdf, _Settings(), _Partitioner()
-    )
-    assert cached and cached[0].text == "cached"
+    save_parser_cache(artifact_dir, pdf, _Settings(), _Parser(), result)
+    cached = load_parser_cache(artifact_dir, pdf, _Settings(), _Parser())
+    assert cached and cached.elements[0].text == "cached"
 
     pdf.write_bytes(b"%PDF changed")
     assert (
-        load_partition_cache(artifact_dir, pdf, _Settings(), _Partitioner())
+        load_parser_cache(artifact_dir, pdf, _Settings(), _Parser())
         is None
     )

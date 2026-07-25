@@ -117,12 +117,14 @@ def tag_documents_with_items(
 
 
 def chapter_index_path(extracted_dir: Path, pdf_name: str) -> Path:
-    return extracted_dir / f"{Path(pdf_name).stem}_chapters.json"
+    from rag_app import source_output_path
+
+    return source_output_path(extracted_dir, pdf_name, "_chapters.json")
 
 
 def save_chapter_index(extracted_dir: Path, pdf_name: str, chapters: List[ChapterEntry]) -> Path:
-    extracted_dir.mkdir(parents=True, exist_ok=True)
     path = chapter_index_path(extracted_dir, pdf_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps([c.to_dict() for c in chapters], indent=2),
         encoding="utf-8",

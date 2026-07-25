@@ -17,7 +17,7 @@ from fastapi import HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-from rag_app import get_vectorstore, ingest
+from rag_app import get_vectorstore, ingest, iter_pdf_paths, pdf_source_id
 
 _INGEST_LOCK = threading.Lock()
 _UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
@@ -96,13 +96,32 @@ def release_ingest_lock() -> None:
     _INGEST_LOCK.release()
 
 
-def run_ingest(rebuild: bool = False) -> Any:
+def run_ingest(
+    rebuild: bool = False,
+    *,
+    only_file: Optional[str] = None,
+    parser: Optional[str] = None,
+    fallback_enabled: Optional[bool] = None,
+) -> Any:
     """Run ingest under the process lock; refresh the live vectorstore handle."""
     try_acquire_ingest_lock()
     try:
-        settings = settings_or_503()
-        result = ingest(settings, rebuild=rebuild)
-        api_state.vectorstore = get_vectorstore(settings, embedder_or_503())
+        from copy import copy
+
+        base_settings = settings_or_503()
+        settings = copy(base_settings)
+        if parser:
+            settings.parser_primary = parser
+            settings.ingestion_backend = parser
+        if fallback_enabled is not None:
+            settings.parser_fallback_enabled = fallback_enabled
+        result = ingest(
+            settings,
+            rebuild=rebuild,
+            only_file=only_file,
+            backend=parser,
+        )
+        api_state.vectorstore = get_vectorstore(base_settings, embedder_or_503())
         return result
     finally:
         release_ingest_lock()
@@ -129,7 +148,17 @@ def archive_chroma(source_files: List[str]) -> Path:
             "format_version": 1,
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
             "collection_name": settings.collection_name,
-            "embedding_model": settings.embed_model,
+            "embedding_provider": getattr(
+                settings,
+                "resolved_embedding_provider",
+                settings.embedding_provider,
+            ),
+            "embedding_model": getattr(
+                settings, "resolved_embedding_model", settings.embed_model
+            ),
+            "embedding_signature": getattr(
+                settings, "resolved_embedding_signature", None
+            ),
             "chunk_size": settings.chunk_size,
             "chunk_overlap": settings.chunk_overlap,
             "document_count": len(source_files),
@@ -169,7 +198,17 @@ def run_archive_only() -> Path:
     try_acquire_ingest_lock()
     try:
         settings = settings_or_503()
-        source_files = sorted(p.name for p in settings.knowledge_dir.glob("*.pdf"))
+        source_files = sorted(
+            pdf_source_id(
+                path,
+                settings.knowledge_dir,
+                settings.extra_pdf_dirs,
+            )
+            for path in iter_pdf_paths(
+                settings.knowledge_dir,
+                settings.extra_pdf_dirs,
+            )
+        )
         return archive_chroma(source_files)
     finally:
         release_ingest_lock()

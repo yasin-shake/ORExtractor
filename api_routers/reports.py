@@ -44,7 +44,7 @@ def list_reports():
 
 
 @router.get(
-    "/api/reports/{filename}",
+    "/api/reports/{filename:path}",
     response_model=NI43101Report,
     summary="Get a structured report extraction",
 )

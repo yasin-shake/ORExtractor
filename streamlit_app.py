@@ -11,12 +11,12 @@ from extractor import extract_report, list_extractions
 from rag_app import (
     _is_short_greeting_or_thanks,
     build_chat_prompt,
-    check_openai_connectivity,
     get_chat_model,
     get_embedder,
     get_vectorstore,
     iter_pdf_paths,
     load_settings,
+    pdf_source_id,
     query_context,
     save_extraction,
 )
@@ -114,7 +114,6 @@ def _conversation_pairs(messages: List[Dict[str, str]]) -> List[Tuple[str, str]]
 @st.cache_resource(show_spinner=False)
 def _load_runtime():
     settings = load_settings()
-    check_openai_connectivity(settings)
     embedder = get_embedder(settings)
     vectorstore = get_vectorstore(settings, embedder)
     llm = get_chat_model(settings)
@@ -174,7 +173,17 @@ def render_ask_tab(settings, vectorstore, llm) -> None:
     with st.sidebar:
         st.markdown("### PDF Sources")
         try:
-            available_pdfs = [p.name for p in iter_pdf_paths(settings.knowledge_dir, settings.extra_pdf_dirs)]
+            available_pdfs = [
+                pdf_source_id(
+                    path,
+                    settings.knowledge_dir,
+                    settings.extra_pdf_dirs,
+                )
+                for path in iter_pdf_paths(
+                    settings.knowledge_dir,
+                    settings.extra_pdf_dirs,
+                )
+            ]
         except FileNotFoundError:
             available_pdfs = []
 
@@ -480,7 +489,17 @@ def _render_exploration(expl: Optional[dict]) -> None:
 
 def render_reports_tab(settings, vectorstore, llm) -> None:
     try:
-        available_pdfs = [p.name for p in iter_pdf_paths(settings.knowledge_dir)]
+        available_pdfs = [
+            pdf_source_id(
+                path,
+                settings.knowledge_dir,
+                settings.extra_pdf_dirs,
+            )
+            for path in iter_pdf_paths(
+                settings.knowledge_dir,
+                settings.extra_pdf_dirs,
+            )
+        ]
     except FileNotFoundError:
         available_pdfs = []
 

@@ -1,0 +1,3 @@
+# Install this profile in an isolated Python 3.12 MinerU worker/CLI environment.
+# The main ORExtractor process communicates with it through HTTP or subprocess.
+mineru[pipeline]==3.4.4

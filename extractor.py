@@ -34,7 +34,13 @@ from langchain_aws import ChatBedrockConverse
 from langchain_chroma import Chroma
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from rag_app import Settings, iter_pdf_paths, query_chunks
+from rag_app import (
+    Settings,
+    iter_pdf_paths,
+    pdf_source_id,
+    query_chunks,
+    source_output_path,
+)
 from schemas import NI43101Report
 
 # ---------------------------------------------------------------------------
@@ -447,31 +453,41 @@ def extract_all(
     except FileNotFoundError:
         pdf_paths = []
 
-    to_process: List = []
+    to_process: List[Tuple[Path, str]] = []
     for pdf_path in pdf_paths:
+        source_file = pdf_source_id(
+            pdf_path,
+            settings.knowledge_dir,
+            settings.extra_pdf_dirs,
+        )
         if skip_existing:
-            out_file = settings.extracted_dir / f"{pdf_path.stem}.json"
+            out_file = source_output_path(
+                settings.extracted_dir,
+                source_file,
+                ".json",
+            )
             if out_file.exists():
                 tqdm.write(f"  ↷ {pdf_path.name} (already extracted, skipping)")
                 continue
-        to_process.append(pdf_path)
+        to_process.append((pdf_path, source_file))
 
     results: List[Tuple[str, NI43101Report]] = []
     bar = tqdm(total=len(to_process), desc="Extracting", unit="report")
 
-    def _worker(pdf_path: Path) -> Tuple[str, NI43101Report]:
+    def _worker(item: Tuple[Path, str]) -> Tuple[str, NI43101Report]:
+        pdf_path, source_file = item
         tqdm.write(f"  → {pdf_path.name}")
-        report = extract_report(settings, vectorstore, llm, pdf_path.name)
-        return pdf_path.name, report
+        report = extract_report(settings, vectorstore, llm, source_file)
+        return source_file, report
 
     with ThreadPoolExecutor(max_workers=_EXTRACT_WORKERS) as pool:
-        futures = {pool.submit(_worker, p): p for p in to_process}
+        futures = {pool.submit(_worker, item): item for item in to_process}
         for future in as_completed(futures):
             try:
                 name, report = future.result()
                 results.append((name, report))
             except Exception as exc:
-                pdf_path = futures[future]
+                pdf_path, _ = futures[future]
                 tqdm.write(f"  ✗ {pdf_path.name} failed: {exc}")
             finally:
                 bar.update(1)
@@ -482,8 +498,7 @@ def extract_all(
 
 def load_extraction(settings: Settings, filename: str) -> Optional[dict]:
     """Load a previously saved extraction JSON by source filename."""
-    stem = Path(filename).stem
-    path = settings.extracted_dir / f"{stem}.json"
+    path = source_output_path(settings.extracted_dir, filename, ".json")
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
@@ -494,9 +509,13 @@ def list_extractions(settings: Settings) -> List[dict]:
     if not settings.extracted_dir.exists():
         return []
     out: List[dict] = []
-    for path in sorted(settings.extracted_dir.glob("*.json")):
+    for path in sorted(settings.extracted_dir.rglob("*.json")):
+        if path.name.endswith("_chapters.json"):
+            continue
         try:
-            out.append(json.loads(path.read_text(encoding="utf-8")))
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                out.append(payload)
         except (json.JSONDecodeError, OSError):
             continue
     return out
@@ -720,17 +739,16 @@ def save_spatial_extraction(settings: Settings, extraction: SpatialExtraction) -
     cross_section_points in the old file. Callers that must not clobber
     reviewed data should check for the file first (run_extract skips existing).
     """
-    settings.spatial_dir.mkdir(parents=True, exist_ok=True)
-    stem = Path(extraction.source_file).stem if extraction.source_file else "report"
-    out_path = settings.spatial_dir / f"{stem}.json"
+    source_file = extraction.source_file or "report"
+    out_path = source_output_path(settings.spatial_dir, source_file, ".json")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(extraction.model_dump_json(indent=2), encoding="utf-8")
     return out_path
 
 
 def load_spatial_extraction(settings: Settings, filename: str) -> Optional[dict]:
     """Load a previously saved spatial extraction JSON by source filename."""
-    stem = Path(filename).stem
-    path = settings.spatial_dir / f"{stem}.json"
+    path = source_output_path(settings.spatial_dir, filename, ".json")
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))

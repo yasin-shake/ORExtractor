@@ -4,6 +4,7 @@ openai
 langchain-core
 langchain-openai
 langchain-chroma
+transformers==4.57.6       # local Qwen3 embeddings (uses Docling's PyTorch install)
 
 # ── LLM (Claude via AWS Bedrock) ──────────────────────────────────────────────
 langchain-aws
@@ -22,12 +23,9 @@ python-multipart    # multipart file uploads
 streamlit
 
 # ── PDF parsing ───────────────────────────────────────────────────────────────
-# olmocr is NOT listed here — it ships with torch+transformers and is only
-# needed on the GPU inference server, not in the application container.
-# Install separately on the GPU host:  pip install olmocr
-pyyaml              # parse olmocr YAML page responses
 PyMuPDF==1.27.2.3             # tested PDF rendering/text-layer version
-unstructured[pdf]==0.24.1    # tested layout-aware partition contract
+docling==2.115.0              # primary lossless layout/table/PDF parser
+langchain-docling==2.0.0      # official Docling integration for LangChain experiments
 pillow==12.2.0               # tested image sizing/crop normalization
 tenacity==9.1.4              # tested Bedrock retry behavior
 
