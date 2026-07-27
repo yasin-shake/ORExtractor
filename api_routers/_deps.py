@@ -10,14 +10,14 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 import api_state
 from fastapi import HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-from rag_app import get_vectorstore, ingest, iter_pdf_paths, pdf_source_id
+from rag_app import get_vectorstore, ingest
 
 _INGEST_LOCK = threading.Lock()
 _UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024
@@ -25,6 +25,10 @@ _MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "2048")) * 1024 * 1024
 
 
 class IngestBusyError(RuntimeError):
+    pass
+
+
+class IngestionFailedError(RuntimeError):
     pass
 
 
@@ -96,6 +100,33 @@ def release_ingest_lock() -> None:
     _INGEST_LOCK.release()
 
 
+def _run_ingest_unlocked(
+    rebuild: bool = False,
+    *,
+    only_file: Optional[str] = None,
+    parser: Optional[str] = None,
+    fallback_enabled: Optional[bool] = None,
+) -> Any:
+    """Run ingest while the caller holds the process lock."""
+    from copy import copy
+
+    base_settings = settings_or_503()
+    settings = copy(base_settings)
+    if parser:
+        settings.parser_primary = parser
+        settings.ingestion_backend = parser
+    if fallback_enabled is not None:
+        settings.parser_fallback_enabled = fallback_enabled
+    result = ingest(
+        settings,
+        rebuild=rebuild,
+        only_file=only_file,
+        backend=parser,
+    )
+    api_state.vectorstore = get_vectorstore(base_settings, embedder_or_503())
+    return result
+
+
 def run_ingest(
     rebuild: bool = False,
     *,
@@ -106,31 +137,183 @@ def run_ingest(
     """Run ingest under the process lock; refresh the live vectorstore handle."""
     try_acquire_ingest_lock()
     try:
-        from copy import copy
-
-        base_settings = settings_or_503()
-        settings = copy(base_settings)
-        if parser:
-            settings.parser_primary = parser
-            settings.ingestion_backend = parser
-        if fallback_enabled is not None:
-            settings.parser_fallback_enabled = fallback_enabled
-        result = ingest(
-            settings,
+        return _run_ingest_unlocked(
             rebuild=rebuild,
             only_file=only_file,
-            backend=parser,
+            parser=parser,
+            fallback_enabled=fallback_enabled,
         )
-        api_state.vectorstore = get_vectorstore(base_settings, embedder_or_503())
-        return result
     finally:
         release_ingest_lock()
 
 
-def archive_chroma(source_files: List[str]) -> Path:
+def create_upload_staging_dir() -> Path:
+    settings = settings_or_503()
+    staging_root = settings.knowledge_dir.resolve().parent
+    staging_root.mkdir(parents=True, exist_ok=True)
+    return Path(
+        tempfile.mkdtemp(
+            prefix="orextractor-upload-",
+            dir=staging_root,
+        )
+    )
+
+
+def _remove_upload_staging_dir(staging_dir: Path) -> None:
+    settings = settings_or_503()
+    resolved = staging_dir.resolve()
+    expected_parent = settings.knowledge_dir.resolve().parent
+    if (
+        resolved.parent != expected_parent
+        or not resolved.name.startswith("orextractor-upload-")
+    ):
+        raise ValueError(f"Refusing to remove unmanaged staging directory: {resolved}")
+    shutil.rmtree(resolved, ignore_errors=True)
+
+
+def _rollback_installed_uploads(
+    installed: list[tuple[Path, Path | None]],
+) -> None:
+    for destination, backup in reversed(installed):
+        destination.unlink(missing_ok=True)
+        if backup is not None and backup.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            backup.replace(destination)
+
+
+def _install_staged_uploads(
+    staging_dir: Path,
+    source_files: List[str],
+) -> list[tuple[Path, Path | None]]:
+    settings = settings_or_503()
+    settings.knowledge_dir.mkdir(parents=True, exist_ok=True)
+    backup_dir = staging_dir / ".backups"
+    installed: list[tuple[Path, Path | None]] = []
+    try:
+        for source_file in source_files:
+            name = safe_pdf_name(source_file)
+            staged = staging_dir / name
+            if not staged.is_file():
+                raise FileNotFoundError(f"Staged upload is missing: {name}")
+            destination = settings.knowledge_dir / name
+            backup = None
+            if destination.exists():
+                if not destination.is_file():
+                    raise IsADirectoryError(destination)
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                backup = backup_dir / name
+                destination.replace(backup)
+            installed.append((destination, backup))
+            staged.replace(destination)
+        return installed
+    except Exception:
+        _rollback_installed_uploads(installed)
+        raise
+
+
+def _run_with_staged_uploads(
+    staging_dir: Path,
+    source_files: List[str],
+    operation: Callable[[], Any],
+    finalize: Callable[[Any], Any] | None = None,
+) -> Any:
+    try:
+        try_acquire_ingest_lock()
+        try:
+            installed = _install_staged_uploads(staging_dir, source_files)
+            try:
+                result = operation()
+            except Exception:
+                _rollback_installed_uploads(installed)
+                raise
+
+            failure = _ingestion_failure_message(result)
+            if failure:
+                successful = {
+                    str(source).replace("\\", "/").casefold()
+                    for source in (getattr(result, "files", None) or [])
+                }
+                failed_uploads = [
+                    record
+                    for record in installed
+                    if record[0].name.casefold() not in successful
+                ]
+                _rollback_installed_uploads(failed_uploads)
+
+            if finalize is not None:
+                return finalize(result)
+            return result
+        finally:
+            release_ingest_lock()
+    finally:
+        _remove_upload_staging_dir(staging_dir)
+
+
+def run_staged_ingest(
+    staging_dir: Path,
+    source_files: List[str],
+    *,
+    parser: Optional[str] = None,
+    fallback_enabled: Optional[bool] = None,
+) -> Any:
+    return _run_with_staged_uploads(
+        staging_dir,
+        source_files,
+        lambda: _run_ingest_unlocked(
+            rebuild=False,
+            parser=parser,
+            fallback_enabled=fallback_enabled,
+        ),
+    )
+
+
+def _ingestion_failure_message(result: Any) -> str | None:
+    status = getattr(result, "status", None)
+    errors = getattr(result, "errors", None) or []
+    if status not in {"failed", "completed_with_errors"} and not errors:
+        return None
+    messages = [
+        str(getattr(error, "message", error))
+        for error in errors
+    ]
+    return "; ".join(messages) or f"Ingestion ended with status {status!r}."
+
+
+def _ensure_ingestion_succeeded(result: Any) -> None:
+    failure = _ingestion_failure_message(result)
+    if failure:
+        raise IngestionFailedError(failure)
+
+
+def _indexed_source_files() -> List[str]:
+    collection = getattr(vectorstore_or_503(), "_collection", None)
+    if collection is None:
+        raise RuntimeError("Vector store does not expose its Chroma collection.")
+    sources: set[str] = set()
+    offset = 0
+    page_size = 1000
+    while True:
+        page = collection.get(
+            include=["metadatas"],
+            limit=page_size,
+            offset=offset,
+        )
+        metadatas = page.get("metadatas") or []
+        for metadata in metadatas:
+            source = (metadata or {}).get("source")
+            if source:
+                sources.add(str(source))
+        if len(metadatas) < page_size:
+            break
+        offset += len(metadatas)
+    return sorted(sources)
+
+
+def archive_chroma(_source_files: Optional[List[str]] = None) -> Path:
     settings = settings_or_503()
     if not settings.chroma_dir.exists():
         raise FileNotFoundError("Chroma directory does not exist. Ingest at least one document first.")
+    indexed_sources = _indexed_source_files()
 
     staging_dir = Path(tempfile.mkdtemp(prefix="orextractor-chroma-stage-"))
     archive_base = Path(tempfile.gettempdir()) / f"orextractor-chroma-{uuid.uuid4().hex}"
@@ -161,8 +344,8 @@ def archive_chroma(source_files: List[str]) -> Path:
             ),
             "chunk_size": settings.chunk_size,
             "chunk_overlap": settings.chunk_overlap,
-            "document_count": len(source_files),
-            "documents": source_files,
+            "document_count": len(indexed_sources),
+            "documents": indexed_sources,
             "vector_count": count,
             "restore_directory_name": "chroma_db",
             "notes": (
@@ -183,33 +366,70 @@ def remove_archive(path: Path) -> None:
     path.unlink(missing_ok=True)
 
 
-def run_ingest_and_archive(rebuild: bool, source_files: List[str]) -> Path:
+def run_ingest_and_archive(rebuild: bool, _source_files: List[str]) -> Path:
     try_acquire_ingest_lock()
     try:
-        settings = settings_or_503()
-        ingest(settings, rebuild=rebuild)
-        api_state.vectorstore = get_vectorstore(settings, embedder_or_503())
-        return archive_chroma(source_files)
+        result = _run_ingest_unlocked(rebuild=rebuild)
+        _ensure_ingestion_succeeded(result)
+        return archive_chroma()
     finally:
         release_ingest_lock()
+
+
+def run_staged_ingest_and_archive(
+    staging_dir: Path,
+    source_files: List[str],
+    *,
+    rebuild: bool,
+) -> Path:
+    def finalize(result: Any) -> Path:
+        _ensure_ingestion_succeeded(result)
+        return archive_chroma()
+
+    return _run_with_staged_uploads(
+        staging_dir,
+        source_files,
+        lambda: _run_ingest_unlocked(rebuild=rebuild),
+        finalize,
+    )
+
+
+def delete_document_and_rebuild(relative_path: Path) -> Any:
+    settings = settings_or_503()
+    knowledge_root = settings.knowledge_dir.resolve()
+    target = (knowledge_root / relative_path).resolve()
+    try:
+        target.relative_to(knowledge_root)
+    except ValueError as exc:
+        raise ValueError(f"Unsafe document path: {relative_path}") from exc
+
+    quarantine = create_upload_staging_dir()
+    try:
+        try_acquire_ingest_lock()
+        try:
+            if not target.is_file():
+                raise FileNotFoundError(target)
+            quarantined = quarantine / relative_path
+            quarantined.parent.mkdir(parents=True, exist_ok=True)
+            target.replace(quarantined)
+            try:
+                result = _run_ingest_unlocked(rebuild=True)
+                _ensure_ingestion_succeeded(result)
+                return result
+            except Exception:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                quarantined.replace(target)
+                raise
+        finally:
+            release_ingest_lock()
+    finally:
+        _remove_upload_staging_dir(quarantine)
 
 
 def run_archive_only() -> Path:
     try_acquire_ingest_lock()
     try:
-        settings = settings_or_503()
-        source_files = sorted(
-            pdf_source_id(
-                path,
-                settings.knowledge_dir,
-                settings.extra_pdf_dirs,
-            )
-            for path in iter_pdf_paths(
-                settings.knowledge_dir,
-                settings.extra_pdf_dirs,
-            )
-        )
-        return archive_chroma(source_files)
+        return archive_chroma()
     finally:
         release_ingest_lock()
 

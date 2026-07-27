@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ingestion.config import ParserQualityPolicy
 from ingestion.models import (
     NORMALIZER_VERSION,
     PIPELINE_VERSION,
@@ -32,6 +33,7 @@ class ParserRouter:
         fallback: DocumentParser | None = None,
     ):
         self.settings = settings
+        self.quality_policy = ParserQualityPolicy.from_settings(settings)
         primary_name = str(
             getattr(settings, "force_parser", "")
             or getattr(settings, "parser_primary", "")
@@ -78,20 +80,7 @@ class ParserRouter:
                 "pipeline_version": PIPELINE_VERSION,
                 "normalizer_version": NORMALIZER_VERSION,
                 "thresholds": {
-                    "text_coverage": getattr(
-                        self.settings, "parser_min_text_page_coverage", 0.90
-                    ),
-                    "empty_ratio": getattr(
-                        self.settings, "parser_max_empty_page_ratio", 0.10
-                    ),
-                    "replacement_ratio": getattr(
-                        self.settings,
-                        "parser_max_replacement_char_ratio",
-                        0.01,
-                    ),
-                    "table_valid_ratio": getattr(
-                        self.settings, "parser_min_table_valid_ratio", 0.80
-                    ),
+                    **self.quality_policy.signature(),
                 },
             },
             sort_keys=True,
@@ -99,6 +88,12 @@ class ParserRouter:
 
     def cache_signature(self) -> dict[str, Any]:
         return json.loads(self._signature_hash_material())
+
+    def close(self) -> None:
+        for parser in (self.primary, self.fallback):
+            close = getattr(parser, "close", None)
+            if callable(close):
+                close()
 
     @staticmethod
     def _failed(
@@ -138,21 +133,7 @@ class ParserRouter:
             result.elements,
             page_count=result.page_count,
             conversion_status=result.status,
-            min_text_page_coverage=getattr(
-                self.settings, "parser_min_text_page_coverage", 0.90
-            ),
-            max_empty_page_ratio=getattr(
-                self.settings, "parser_max_empty_page_ratio", 0.10
-            ),
-            max_replacement_char_ratio=getattr(
-                self.settings, "parser_max_replacement_char_ratio", 0.01
-            ),
-            min_table_valid_ratio=getattr(
-                self.settings, "parser_min_table_valid_ratio", 0.80
-            ),
-            require_picture_crops=getattr(
-                self.settings, "parser_require_picture_crops", False
-            ),
+            **self.quality_policy.assessment_kwargs(),
         )
 
     def _run(
@@ -180,10 +161,12 @@ class ParserRouter:
                     cached = ParserResult.model_validate_json(
                         result_path.read_text(encoding="utf-8")
                     )
+                    from ingestion.cache import parser_result_accepted
+
                     if all(
                         not element.image_path or Path(element.image_path).exists()
                         for element in cached.elements
-                    ):
+                    ) and parser_result_accepted(cached, self.settings):
                         self._refresh_quality(cached)
                         cached.duration_ms = 0.0
                         cached.quality.duration_ms = 0.0
@@ -202,7 +185,12 @@ class ParserRouter:
                 )
         except Exception as exc:
             return self._failed(pdf_path, parser, exc, source_file)
-        if signature is not None and result.elements:
+        from ingestion.cache import parser_result_accepted
+
+        if (
+            signature is not None
+            and parser_result_accepted(result, self.settings)
+        ):
             parser_dir.mkdir(parents=True, exist_ok=True)
             result_path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
             signature_path.write_text(
@@ -313,6 +301,13 @@ class ParserRouter:
                 selected.warnings.append(
                     "Parser quality gates failed and MinerU fallback was disabled."
                 )
+        elif (
+            fallback_result is not None
+            and not fallback_used
+            and fallback_result.errors
+        ):
+            selected.errors.extend(fallback_result.errors)
+        selected.errors = list(dict.fromkeys(selected.errors))
         self._persist_decision(
             pdf_path,
             primary_result,
@@ -324,4 +319,22 @@ class ParserRouter:
         return selected
 
 def get_parser_router(settings) -> ParserRouter:
-    return ParserRouter(settings)
+    router = ParserRouter(settings)
+    forced = bool(str(getattr(settings, "force_parser", "") or "").strip())
+    fallback_enabled = bool(
+        getattr(settings, "parser_fallback_enabled", True)
+    )
+    require_ready = bool(
+        getattr(settings, "parser_require_fallback_ready", False)
+    )
+    if (
+        not forced
+        and fallback_enabled
+        and router.fallback is not None
+        and require_ready
+    ):
+        readiness = getattr(router.fallback, "readiness_error", None)
+        error = readiness() if callable(readiness) else None
+        if error:
+            raise RuntimeError(error)
+    return router

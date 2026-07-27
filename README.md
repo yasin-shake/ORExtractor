@@ -57,6 +57,13 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+Install the optional LangChain Docling comparison adapter only when running
+parser/chunker benchmarks:
+
+```bash
+pip install -r requirements-benchmark.txt
+```
+
 Copy and configure the environment file:
 
 ```bash
@@ -84,13 +91,21 @@ python rag_app.py ingest
 
 Set `INGESTION_BACKEND=docling` to use the layout-aware pipeline. Docling's lossless JSON and Markdown, normalized elements, table/figure crops, quality report, and parser-selection decision are retained. If configured gates fail, MinerU runs on the whole document and the router selects one complete canonical stream by deterministic score. The selected stream is converted to standard LangChain `Document` records with parser provenance.
 
-Multi-report ingestion uses a bounded three-stage pipeline: the main thread
-parses report N with one reusable Docling converter, a worker enriches report
+Multi-report ingestion uses a bounded three-stage pipeline: a persistent,
+killable Docling process parses report N with reusable converters, a worker enriches report
 N-1 through Bedrock, and a single indexing worker embeds/upserts report N-2.
 Only the indexing worker writes to Chroma. Adaptive OCR skips RapidOCR when
 nearly every page already has native text; scanned or mixed documents retain
-GPU OCR. Per-report Docling timings and runtime decisions are saved in
+GPU OCR. Long reports are checkpointed into page ranges, and a hard timeout
+terminates and replaces a stuck Docling process instead of leaking native
+threads. Source PDFs are exposed to Docling through short ASCII staging paths,
+which avoids Windows path-length and Unicode backend failures. Per-report
+Docling timings and runtime decisions are saved in
 `parsers/docling/profiling.json`.
+
+When MinerU fallback is enabled, startup now requires a configured MinerU
+service or CLI. Degraded and timed-out results remain retryable and are not
+stored as completed parser caches or resumable manifests.
 
 Claude Haiku is called only for routed figures and important or suspicious tables. A failed visual call is recorded per element and does not stop normal text ingestion. Reconstruction is deterministic through Plotly or Graphviz, never executes model-generated code, and rejects geological maps, cross-sections, mine plans, block models, and similar technical geometry.
 
@@ -123,6 +138,9 @@ python rag_app.py ingest --parser docling --fallback mineru
 
 Both passes are resumable. If interrupted, rerun the same command without
 `--rebuild`; completed reports are skipped using the manifest.
+The text-first pass uses `DOCLING_TEXT_FIRST_TABLE_MODE=fast`; the visual pass
+returns to `DOCLING_TABLE_MODE=accurate`. Existing accurate results satisfy a
+fast-pass request, while degraded reports are automatically retried.
 
 The embedding backend is selected once at process startup. If local Qwen fails
 its health check, ORExtractor uses the configured OpenAI fallback before opening
@@ -208,7 +226,9 @@ Interactive docs: `http://localhost:8000/docs`
 | `POST`   | `/api/extract` | Run extraction on one ingested report; body `{filename}` |
 | `POST`   | `/api/extract/all` | Run extraction on all ingested reports |
 
-If `API_KEY` is set in `.env`, every request must include `X-API-Key: <key>`. The `/dashboard` route is always public.
+If `API_KEY` is set in `.env`, every `/api/*` request must include
+`X-API-Key: <key>`. The `/dashboard` route and read-only
+`/spatial_data/*` model files remain public.
 
 ### 4d — CLI chat
 
@@ -361,7 +381,7 @@ Study type/date, pre- and post-tax NPV, IRR, payback, discount rate, initial/sus
 | Vector store & embeddings | `chromadb`, `transformers`, local Qwen3, `openai`, `langchain-core`, `langchain-openai`, `langchain-chroma` |
 | LLM (Claude via AWS Bedrock) | `langchain-aws`, `boto3` |
 | Agent | `langgraph` (ReAct tool-calling loop) |
-| PDF parsing | `docling` (primary), isolated `mineru` (fallback), `langchain-docling` (benchmark/integration), `PyMuPDF` (rendering and diagnostics) |
+| PDF parsing | `docling` (primary), isolated `mineru` (fallback), `PyMuPDF` (rendering and diagnostics) |
 | Visual enrichment/reconstruction | `langchain-aws`, Claude Haiku on Bedrock, `pillow`, `tenacity`, `plotly`, `kaleido`, `graphviz` |
 | Observability | `langsmith` (content hidden by default) |
 | API server | `fastapi`, `uvicorn[standard]`, `anyio`, `python-multipart` |
@@ -437,15 +457,24 @@ The API is available at `http://localhost:8000`. The bundled `docker-compose.yml
 | `DOCLING_BATCH_FALLBACK_ENABLED` | `true` | Retry native-memory failures with the safe batch and retain safe mode afterward |
 | `DOCLING_SAFE_BATCH_SIZE` | `1` | Low-memory retry batch size |
 | `DOCLING_FAST_TABLE_MAX_PAGES` | `20` | Use fast table mode for short reports; longer reports retain the configured mode |
+| `DOCLING_TEXT_FIRST_TABLE_MODE` | `fast` | Table mode used by `--no-visual-enrichment`; `configured` preserves `DOCLING_TABLE_MODE` |
 | `DOCLING_PROFILING` | `true` | Persist Docling timings and effective runtime decisions per report |
 | `DOCLING_CONVERTER_CACHE_SIZE` | `2` | Reusable Docling pipeline variants retained in memory |
+| `DOCLING_PROCESS_ISOLATION` | `true` | Run Docling in a persistent process that can be terminated safely |
+| `DOCLING_HARD_TIMEOUT_SECONDS` | `900` | Parent-enforced deadline per document or page segment |
+| `DOCLING_SEGMENT_MIN_PAGES` | `300` | Page count at which checkpointed segment processing begins |
+| `DOCLING_SEGMENT_PAGES` | `100` | Pages processed per checkpointed Docling request |
 | `MINERU_EXECUTION_MODE` | `service` | `service` or isolated `cli` |
 | `MINERU_API_URL` | _(unset)_ | MinerU service endpoint |
 | `PARSER_MIN_TEXT_PAGE_COVERAGE` | `0.90` | Fallback text-page coverage gate; calibrate on corpus |
 | `PARSER_MAX_EMPTY_PAGE_RATIO` | `0.10` | Fallback empty-page gate |
 | `PARSER_MAX_REPLACEMENT_CHAR_RATIO` | `0.01` | Text corruption gate |
 | `PARSER_MIN_TABLE_VALID_RATIO` | `0.80` | Table structure gate |
+| `PARSER_MIN_CACHE_QUALITY_SCORE` | `0.90` | Minimum parser score that may be cached or marked complete |
+| `PARSER_MIN_PAGE_COUNT_AGREEMENT` | `0.90` | Minimum observed/expected page agreement for resumable completion |
+| `PARSER_REQUIRE_FALLBACK_READY` | `true` | Fail before ingestion when the enabled MinerU adapter is unavailable |
 | `RAG_ARTIFACT_DIR` | `ingestion_artifacts` | Retained source crops, raw/normalized partition output, enrichments, chunks, and audit manifests |
+| `RAG_INGEST_WORK_DIR` | `.ingestion_work` | Temporary short-path PDF aliases used by native parsers |
 | `BEDROCK_VISUAL_MODEL_ID` | Claude 3.5 Haiku inference profile | Separate Bedrock model/inference profile for visual ingestion |
 | `BEDROCK_VISUAL_MAX_TOKENS` | `3500` | Maximum output tokens per visual/table call |
 | `BEDROCK_VISUAL_CONCURRENCY` | `8` | Maximum concurrent visual/table calls |

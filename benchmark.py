@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
 import statistics
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
 from extractor import list_extractions, load_extraction
@@ -147,100 +150,272 @@ def find_peer_reports(
     return filtered[:limit]
 
 
-def _extract_numeric_values(report: dict, field: str) -> List[Tuple[str, float, str]]:
-    """Pull numeric values for a benchmark field from one report."""
-    out: List[Tuple[str, float, str]] = []
+@dataclass(frozen=True)
+class BenchmarkObservation:
+    """A value normalized enough to decide whether two reports are comparable."""
+
+    file: str
+    value: Decimal
+    unit: str
+    currency: Optional[str] = None
+    commodity: Optional[str] = None
+    raw: str = ""
+
+    @property
+    def comparison_key(self) -> tuple[str, Optional[str], Optional[str]]:
+        return (self.unit, self.currency, self.commodity)
+
+
+_NUMBER_RE = re.compile(r"[-+]?(?:\d[\d,]*\.?\d*|\.\d+)")
+_PERCENT_RE = re.compile(
+    r"([-+]?(?:\d[\d,]*\.?\d*|\.\d+))\s*%\s*([A-Za-z]{1,4})?",
+    flags=re.IGNORECASE,
+)
+
+
+def _decimal(value: Any) -> Optional[Decimal]:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            return Decimal(str(value))
+        except InvalidOperation:
+            return None
+    match = _NUMBER_RE.search(str(value))
+    if not match:
+        return None
+    try:
+        return Decimal(match.group(0).replace(",", ""))
+    except InvalidOperation:
+        return None
+
+
+def _currency(text: str, fallback: Any = None) -> Optional[str]:
+    upper = text.upper().replace(" ", "")
+    for currency, tokens in (
+        ("CAD", ("CAD", "C$")),
+        ("AUD", ("AUD", "A$")),
+        ("USD", ("USD", "US$")),
+        ("EUR", ("EUR", "€")),
+        ("GBP", ("GBP", "£")),
+    ):
+        if any(token in upper for token in tokens):
+            return currency
+    if "$" in text:
+        return "USD"
+    normalized = str(fallback or "").strip().upper()
+    return normalized or None
+
+
+def _money_multiplier(text: str) -> Decimal:
+    normalized = text.lower()
+    if re.search(r"\b(billion|bn)\b", normalized) or re.search(
+        r"(?:[$€£]|\b[A-Z]{3}\s*)\s*\d[\d,.]*\s*b\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return Decimal("1000000000")
+    if re.search(r"\b(million|mm)\b", normalized) or re.search(
+        r"(?:[$€£]|\b[A-Z]{3}\s*)\s*\d[\d,.]*\s*m\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return Decimal("1000000")
+    if re.search(r"\b(thousand|k)\b", normalized):
+        return Decimal("1000")
+    return Decimal(1)
+
+
+def _commodity(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip().upper()
+    return normalized or None
+
+
+def _cutoff_unit(text: str, legacy_unit: Any = None) -> str:
+    normalized = text.lower().replace(" ", "")
+    legacy = str(legacy_unit or "").strip()
+    if "%" in text or legacy == "%":
+        return "%"
+    for pattern, unit in (
+        (r"g/t|gpt|g/tonne", "g/t"),
+        (r"kg/t|kgpt|kg/tonne", "kg/t"),
+        (r"oz/t|opt|oz/ton", "oz/t"),
+        (r"lb/t|lb/ton", "lb/t"),
+        (r"ppm", "ppm"),
+        (r"ppb", "ppb"),
+    ):
+        if re.search(pattern, normalized) or re.search(
+            pattern, legacy.lower().replace(" ", "")
+        ):
+            return unit
+    return legacy.lower() or "unknown"
+
+
+def _money_observation(
+    *,
+    filename: str,
+    value: Any,
+    unit: str,
+    currency_hint: Any = None,
+) -> Optional[BenchmarkObservation]:
+    number = _decimal(value)
+    if number is None:
+        return None
+    raw = str(value)
+    denominator = ""
+    if unit == "money/rate":
+        lowered = raw.lower()
+        for pattern, label in (
+            (r"/\s*(?:t|tonne)\b|per\s+(?:t|tonne)\b", "t"),
+            (r"/\s*lb\b|per\s+lb\b", "lb"),
+            (r"/\s*oz\b|per\s+oz\b", "oz"),
+            (r"/\s*kg\b|per\s+kg\b", "kg"),
+        ):
+            if re.search(pattern, lowered):
+                denominator = f"/{label}"
+                break
+        if not denominator:
+            denominator = "/unknown"
+    return BenchmarkObservation(
+        file=filename,
+        value=number * _money_multiplier(raw),
+        unit=("money" if unit == "money" else f"money{denominator}"),
+        currency=_currency(raw, currency_hint),
+        raw=raw,
+    )
+
+
+def _percent_observations(
+    filename: str,
+    value: Any,
+    *,
+    commodity_hint: Any = None,
+) -> List[BenchmarkObservation]:
+    if value is None:
+        return []
+    raw = str(value)
+    matches = list(_PERCENT_RE.finditer(raw))
+    if matches:
+        return [
+            BenchmarkObservation(
+                file=filename,
+                value=Decimal(match.group(1).replace(",", "")),
+                unit="%",
+                commodity=_commodity(match.group(2) or commodity_hint),
+                raw=raw,
+            )
+            for match in matches
+        ]
+    number = _decimal(value)
+    if number is None:
+        return []
+    return [
+        BenchmarkObservation(
+            file=filename,
+            value=number,
+            unit="%",
+            commodity=_commodity(commodity_hint),
+            raw=raw,
+        )
+    ]
+
+
+def _extract_numeric_values(
+    report: dict,
+    field: str,
+) -> List[BenchmarkObservation]:
+    """Normalize current-schema and legacy benchmark values from one report."""
+    out: List[BenchmarkObservation] = []
     name = report.get("source_file") or "unknown"
 
     if field in ("cutoff", "cutoff_grade", "resource_cutoff"):
-        for res in report.get("mineral_resources") or []:
-            v = res.get("cutoff_grade")
-            if v is not None:
-                try:
-                    out.append((name, float(v), res.get("cutoff_unit") or ""))
-                except (TypeError, ValueError):
-                    pass
-        for res in report.get("mineral_reserves") or []:
-            v = res.get("cutoff_grade")
-            if v is not None:
-                try:
-                    out.append((name, float(v), res.get("cutoff_unit") or ""))
-                except (TypeError, ValueError):
-                    pass
+        rows = list(report.get("mineral_resources") or []) + list(
+            report.get("mineral_reserves") or []
+        )
+        for row in rows:
+            value = row.get("cut_off_grade", row.get("cutoff_grade"))
+            number = _decimal(value)
+            if number is None:
+                continue
+            raw = str(value)
+            out.append(
+                BenchmarkObservation(
+                    file=name,
+                    value=number,
+                    unit=_cutoff_unit(raw, row.get("cutoff_unit")),
+                    commodity=_commodity(row.get("commodity")),
+                    raw=raw,
+                )
+            )
 
     elif field in ("npv", "post_tax_npv"):
         econ = report.get("economics") or {}
         for key in ("post_tax_npv", "pre_tax_npv"):
-            v = econ.get(key)
-            if v is not None:
-                try:
-                    out.append((name, float(v), econ.get("npv_currency") or "USD"))
-                    break
-                except (TypeError, ValueError):
-                    pass
+            observation = _money_observation(
+                filename=name,
+                value=econ.get(key),
+                unit="money",
+                currency_hint=econ.get("npv_currency"),
+            )
+            if observation:
+                out.append(observation)
+                break
 
-    elif field in ("irr",):
-        econ = report.get("economics") or {}
-        v = econ.get("irr")
-        if v is not None:
-            try:
-                out.append((name, float(v), "%"))
-            except (TypeError, ValueError):
-                pass
+    elif field == "irr":
+        out.extend(
+            _percent_observations(
+                name,
+                (report.get("economics") or {}).get("irr"),
+            )
+        )
 
     elif field in ("initial_capex", "capex"):
         econ = report.get("economics") or {}
-        v = econ.get("initial_capex") or econ.get("total_capex")
-        if v is not None:
-            try:
-                out.append((name, float(v), "USD"))
-            except (TypeError, ValueError):
-                pass
+        observation = _money_observation(
+            filename=name,
+            value=econ.get("initial_capex") or econ.get("total_capex"),
+            unit="money",
+            currency_hint=econ.get("capex_currency"),
+        )
+        if observation:
+            out.append(observation)
 
-    elif field in ("opex",):
+    elif field == "opex":
         econ = report.get("economics") or {}
-        v = econ.get("opex")
-        if v is not None:
-            try:
-                out.append((name, float(v), "USD"))
-            except (TypeError, ValueError):
-                pass
+        observation = _money_observation(
+            filename=name,
+            value=econ.get("opex"),
+            unit="money/rate",
+            currency_hint=econ.get("opex_currency"),
+        )
+        if observation:
+            out.append(observation)
 
     elif field in ("recovery", "recovery_rate"):
         econ = report.get("economics") or {}
-        v = econ.get("recovery_rate")
-        if v is not None:
-            try:
-                out.append((name, float(v), "%"))
-            except (TypeError, ValueError):
-                pass
-        proc = report.get("processing_method") or {}
-        v2 = proc.get("overall_recovery") if isinstance(proc, dict) else None
-        if v2 is not None:
-            try:
-                out.append((name, float(v2), "%"))
-            except (TypeError, ValueError):
-                pass
+        out.extend(_percent_observations(name, econ.get("recovery_rate")))
+        processing = report.get("processing_method") or {}
+        for recovery in processing.get("recoveries") or []:
+            out.extend(_percent_observations(name, recovery))
+        out.extend(_percent_observations(name, processing.get("overall_recovery")))
 
-    elif field in ("dilution",):
-        mm = report.get("mining_method") or {}
-        if isinstance(mm, dict):
-            v = mm.get("dilution_pct")
-            if v is not None:
-                try:
-                    out.append((name, float(v), "%"))
-                except (TypeError, ValueError):
-                    pass
+    elif field == "dilution":
+        mining = report.get("mining_method") or {}
+        out.extend(
+            _percent_observations(
+                name,
+                mining.get("dilution", mining.get("dilution_pct")),
+            )
+        )
 
-    elif field in ("mining_recovery",):
-        mm = report.get("mining_method") or {}
-        if isinstance(mm, dict):
-            v = mm.get("mining_recovery_pct")
-            if v is not None:
-                try:
-                    out.append((name, float(v), "%"))
-                except (TypeError, ValueError):
-                    pass
+    elif field == "mining_recovery":
+        mining = report.get("mining_method") or {}
+        out.extend(
+            _percent_observations(
+                name,
+                mining.get("mine_recovery", mining.get("mining_recovery_pct")),
+            )
+        )
 
     return out
 
@@ -250,75 +425,141 @@ def benchmark_field(
     peer_reports: List[dict],
     target_report: Optional[dict] = None,
 ) -> Dict[str, Any]:
-    """Aggregate a numeric field across peers; flag target outliers."""
-    peer_values: List[float] = []
-    entries: List[dict] = []
+    """Aggregate only values that share a unit, currency, and commodity."""
+    peer_observations = [
+        observation
+        for report in peer_reports
+        for observation in _extract_numeric_values(report, field)
+    ]
+    target_observations = (
+        _extract_numeric_values(target_report, field) if target_report else []
+    )
 
-    for report in peer_reports:
-        for fname, val, unit in _extract_numeric_values(report, field):
-            peer_values.append(val)
-            entries.append({"file": fname, "value": val, "unit": unit})
+    grouped: dict[
+        tuple[str, Optional[str], Optional[str]],
+        List[BenchmarkObservation],
+    ] = {}
+    for observation in peer_observations:
+        grouped.setdefault(observation.comparison_key, []).append(observation)
 
-    target_vals: List[float] = []
-    if target_report:
-        for fname, val, unit in _extract_numeric_values(target_report, field):
-            target_vals.append(val)
-            entries.append({"file": fname, "value": val, "unit": unit, "is_target": True})
+    if target_observations:
+        target_keys = {
+            observation.comparison_key for observation in target_observations
+        }
+        comparison_key = min(
+            target_keys,
+            key=lambda key: (-len(grouped.get(key, [])), repr(key)),
+        )
+    elif grouped:
+        comparison_key = min(
+            grouped,
+            key=lambda key: (-len(grouped[key]), repr(key)),
+        )
+    else:
+        comparison_key = None
 
-    values = peer_values + [v for v in target_vals if v not in peer_values]
+    selected_peers = grouped.get(comparison_key, []) if comparison_key else []
+    selected_targets = (
+        [
+            observation
+            for observation in target_observations
+            if observation.comparison_key == comparison_key
+        ]
+        if comparison_key
+        else target_observations
+    )
+    peer_values = [observation.value for observation in selected_peers]
+    target_values = [observation.value for observation in selected_targets]
+    values = peer_values or target_values
 
-    if not values and not peer_values:
+    def entry(observation: BenchmarkObservation, *, is_target: bool = False) -> dict:
+        payload = {
+            "file": observation.file,
+            "value": float(observation.value),
+            "unit": observation.unit,
+            "currency": observation.currency,
+            "commodity": observation.commodity,
+            "raw": observation.raw,
+            "comparable": observation.comparison_key == comparison_key,
+        }
+        if is_target:
+            payload["is_target"] = True
+        return payload
+
+    entries = [entry(observation) for observation in peer_observations]
+    entries.extend(
+        entry(observation, is_target=True)
+        for observation in target_observations
+    )
+
+    if not values:
         return {
             "field": field,
             "count": 0,
             "summary": f"No '{field}' values found in peer extractions.",
             "entries": entries,
             "outliers": [],
+            "comparison_key": None,
+            "excluded_incomparable": 0,
         }
 
-    med = statistics.median(peer_values if peer_values else values)
-    try:
-        mn, mx = (min(peer_values), max(peer_values)) if peer_values else (min(values), max(values))
-    except ValueError:
-        mn = mx = med
+    med = statistics.median(values)
+    mn, mx = min(values), max(values)
 
     target_outliers: List[str] = []
-    if target_report and target_vals and peer_values:
+    if target_report and target_values and peer_values:
         peer_mn, peer_mx = min(peer_values), max(peer_values)
         peer_med = statistics.median(peer_values)
-        for tv in target_vals:
+        for target_value in target_values:
             spread = peer_mx - peer_mn
-            if spread > 0 and (tv < peer_mn - 0.25 * spread or tv > peer_mx + 0.25 * spread):
+            if spread > 0 and (
+                target_value < peer_mn - Decimal("0.25") * spread
+                or target_value > peer_mx + Decimal("0.25") * spread
+            ):
                 target_outliers.append(
-                    f"Target value {tv} is outside peer range [{peer_mn:.4g}, {peer_mx:.4g}] "
+                    f"Target value {float(target_value):.4g} is outside peer range "
+                    f"[{float(peer_mn):.4g}, {float(peer_mx):.4g}] "
                     f"(peer median {peer_med:.4g})"
                 )
-            elif spread == 0 and tv != peer_mn:
+            elif spread == 0 and target_value != peer_mn:
                 target_outliers.append(
-                    f"Target value {tv} differs from peer value {peer_mn:.4g}"
+                    f"Target value {float(target_value):.4g} differs from peer value "
+                    f"{float(peer_mn):.4g}"
                 )
-    elif target_report and target_vals and len(peer_values) == 1:
-        if target_vals[0] != peer_values[0]:
-            target_outliers.append(
-                f"Target value {target_vals[0]} differs from sole peer value {peer_values[0]}"
-            )
 
     summary = (
-        f"Field '{field}': peer_n={len(peer_values)}, peer_range=[{mn:.4g}, {mx:.4g}], peer_median={med:.4g}. "
-        + "; ".join(f"{e['file']}: {e['value']}" for e in entries[:8])
+        f"Field '{field}': peer_n={len(peer_values)}, "
+        f"peer_range=[{float(mn):.4g}, {float(mx):.4g}], "
+        f"peer_median={float(med):.4g}. "
+        + "; ".join(
+            f"{observation.file}: {float(observation.value):.4g}"
+            for observation in selected_peers[:8]
+        )
     )
-    if len(entries) > 8:
-        summary += f" (+{len(entries) - 8} more)"
+    if len(selected_peers) > 8:
+        summary += f" (+{len(selected_peers) - 8} more)"
+
+    key_payload = (
+        {
+            "unit": comparison_key[0],
+            "currency": comparison_key[1],
+            "commodity": comparison_key[2],
+        }
+        if comparison_key
+        else None
+    )
 
     return {
         "field": field,
-        "count": len(peer_values) if peer_values else len(values),
-        "min": mn,
-        "max": mx,
-        "median": med,
+        "count": len(peer_values) if peer_values else len(target_values),
+        "min": float(mn),
+        "max": float(mx),
+        "median": float(med),
         "summary": summary,
         "entries": entries,
         "outliers": target_outliers,
+        "comparison_key": key_payload,
+        "excluded_incomparable": len(peer_observations) - len(selected_peers),
     }
 
 
@@ -334,10 +575,10 @@ def infer_benchmark_field(question: str) -> Optional[str]:
         return "initial_capex"
     if "opex" in q or "operating cost" in q:
         return "opex"
-    if "recovery" in q:
-        return "recovery_rate"
     if "dilution" in q:
         return "dilution"
     if "mining recovery" in q:
         return "mining_recovery"
+    if "recovery" in q:
+        return "recovery_rate"
     return None

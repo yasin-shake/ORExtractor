@@ -6,8 +6,8 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
-from typing import Iterable, List, Optional, Tuple
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 from tqdm import tqdm
 from dotenv import load_dotenv
@@ -17,7 +17,16 @@ from langchain_core.messages import HumanMessage
 from langchain_aws import ChatBedrockConverse
 from langchain_chroma import Chroma
 from langchain_openai import OpenAIEmbeddings
-from openai import APIConnectionError, APIError, RateLimitError
+from ingestion.indexing import (
+    add_documents_with_retry as _add_documents_with_retry,
+    build_doc_id,
+)
+from ingestion.sources import (
+    filesystem_path,
+    iter_pdf_paths,
+    pdf_source_id,
+    source_output_path,
+)
 
 # When this file is executed directly, ingestion modules import helpers using
 # ``from rag_app import ...``. Alias the running module so Python does not load
@@ -102,6 +111,9 @@ class Settings:
     parser_max_replacement_char_ratio: float = 0.01
     parser_min_table_valid_ratio: float = 0.80
     parser_require_picture_crops: bool = False
+    parser_min_cache_quality_score: float = 0.90
+    parser_min_page_count_agreement: float = 0.90
+    parser_require_fallback_ready: bool = True
     docling_execution_mode: str = "local"
     docling_serve_url: Optional[str] = None
     docling_serve_api_key: str = ""
@@ -112,6 +124,7 @@ class Settings:
     docling_ocr_bitmap_area_threshold: float = 0.05
     docling_do_table_structure: bool = True
     docling_table_mode: str = "accurate"
+    docling_text_first_table_mode: str = "fast"
     docling_generate_page_images: bool = True
     docling_generate_picture_images: bool = True
     docling_images_scale: float = 1.0
@@ -133,6 +146,10 @@ class Settings:
     docling_converter_cache_size: int = 2
     docling_heading_hierarchy: bool = True
     docling_timeout_seconds: int = 900
+    docling_hard_timeout_seconds: int = 900
+    docling_process_isolation: bool = True
+    docling_segment_min_pages: int = 300
+    docling_segment_pages: int = 100
     docling_max_pages: int = 1000
     docling_max_file_mb: int = 2048
     docling_model_artifact_revision: str = ""
@@ -143,6 +160,7 @@ class Settings:
     mineru_backend: str = "pipeline"
     mineru_timeout_seconds: int = 1800
     artifact_dir: Path = Path("ingestion_artifacts")
+    ingest_work_dir: Path = Path(".ingestion_work")
     bedrock_visual_model_id: str = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
     bedrock_visual_max_tokens: int = 3500
     bedrock_visual_concurrency: int = 8
@@ -264,6 +282,15 @@ def load_settings() -> Settings:
         parser_require_picture_crops=_env_bool(
             "PARSER_REQUIRE_PICTURE_CROPS", False
         ),
+        parser_min_cache_quality_score=float(
+            os.getenv("PARSER_MIN_CACHE_QUALITY_SCORE", "0.90")
+        ),
+        parser_min_page_count_agreement=float(
+            os.getenv("PARSER_MIN_PAGE_COUNT_AGREEMENT", "0.90")
+        ),
+        parser_require_fallback_ready=_env_bool(
+            "PARSER_REQUIRE_FALLBACK_READY", True
+        ),
         docling_execution_mode=os.getenv(
             "DOCLING_EXECUTION_MODE", "local"
         ).strip().lower(),
@@ -284,6 +311,9 @@ def load_settings() -> Settings:
         ),
         docling_do_table_structure=_env_bool("DOCLING_DO_TABLE_STRUCTURE", True),
         docling_table_mode=os.getenv("DOCLING_TABLE_MODE", "accurate").strip(),
+        docling_text_first_table_mode=os.getenv(
+            "DOCLING_TEXT_FIRST_TABLE_MODE", "fast"
+        ).strip().lower(),
         docling_generate_page_images=_env_bool(
             "DOCLING_GENERATE_PAGE_IMAGES", True
         ),
@@ -323,6 +353,18 @@ def load_settings() -> Settings:
         ),
         docling_heading_hierarchy=_env_bool("DOCLING_HEADING_HIERARCHY", True),
         docling_timeout_seconds=int(os.getenv("DOCLING_TIMEOUT_SECONDS", "900")),
+        docling_hard_timeout_seconds=int(
+            os.getenv("DOCLING_HARD_TIMEOUT_SECONDS", "900")
+        ),
+        docling_process_isolation=_env_bool(
+            "DOCLING_PROCESS_ISOLATION", True
+        ),
+        docling_segment_min_pages=max(
+            0, int(os.getenv("DOCLING_SEGMENT_MIN_PAGES", "300"))
+        ),
+        docling_segment_pages=max(
+            0, int(os.getenv("DOCLING_SEGMENT_PAGES", "100"))
+        ),
         docling_max_pages=int(os.getenv("DOCLING_MAX_PAGES", "1000")),
         docling_max_file_mb=int(os.getenv("DOCLING_MAX_FILE_MB", "2048")),
         docling_model_artifact_revision=os.getenv(
@@ -337,6 +379,9 @@ def load_settings() -> Settings:
         mineru_backend=os.getenv("MINERU_BACKEND", "pipeline").strip() or "pipeline",
         mineru_timeout_seconds=int(os.getenv("MINERU_TIMEOUT_SECONDS", "1800")),
         artifact_dir=Path(os.getenv("RAG_ARTIFACT_DIR", "ingestion_artifacts")),
+        ingest_work_dir=Path(
+            os.getenv("RAG_INGEST_WORK_DIR", ".ingestion_work")
+        ),
         bedrock_visual_model_id=os.getenv(
             "BEDROCK_VISUAL_MODEL_ID",
             "us.anthropic.claude-3-5-haiku-20241022-v1:0",
@@ -555,97 +600,6 @@ def get_chat_model(
     )
 
 
-def _pdf_roots(
-    knowledge_dir: Path,
-    extra_dirs: Optional[List[Path]] = None,
-) -> List[Path]:
-    return [Path(knowledge_dir), *(Path(path) for path in (extra_dirs or []))]
-
-
-def iter_pdf_paths(
-    knowledge_dir: Path,
-    extra_dirs: Optional[List[Path]] = None,
-) -> Iterable[Path]:
-    """Yield every PDF below the configured roots, recursively and once."""
-    if not knowledge_dir.exists():
-        raise FileNotFoundError(f"Knowledge directory does not exist: {knowledge_dir}")
-
-    paths: dict[str, Path] = {}
-    for root in _pdf_roots(knowledge_dir, extra_dirs):
-        if not root.exists():
-            continue
-        # os.walk is intentional: pathlib.rglob().is_file() can silently omit
-        # valid PDFs whose absolute Windows paths exceed the legacy MAX_PATH.
-        for directory, _, filenames in os.walk(root):
-            for filename in filenames:
-                path = Path(directory) / filename
-                if path.suffix.casefold() != ".pdf":
-                    continue
-                resolved = path.resolve()
-                paths.setdefault(os.path.normcase(str(resolved)), path)
-
-    return sorted(
-        paths.values(),
-        key=lambda path: pdf_source_id(path, knowledge_dir, extra_dirs).casefold(),
-    )
-
-
-def pdf_source_id(
-    pdf_path: Path,
-    knowledge_dir: Path,
-    extra_dirs: Optional[List[Path]] = None,
-) -> str:
-    """Return the stable Chroma/source identifier for a discovered PDF."""
-    resolved_pdf = Path(pdf_path).resolve()
-    matching_roots: List[Path] = []
-    for root in _pdf_roots(knowledge_dir, extra_dirs):
-        try:
-            resolved_pdf.relative_to(root.resolve())
-            matching_roots.append(root.resolve())
-        except ValueError:
-            continue
-    if not matching_roots:
-        return Path(pdf_path).name
-
-    # Prefer the most specific root when configured roots overlap.
-    root = max(matching_roots, key=lambda candidate: len(candidate.parts))
-    return resolved_pdf.relative_to(root).as_posix()
-
-
-def filesystem_path(path: Path) -> Path:
-    """Return a Windows extended path when the resolved path exceeds MAX_PATH."""
-    candidate = Path(path)
-    if os.name != "nt":
-        return candidate
-    resolved = candidate.resolve()
-    raw = str(resolved)
-    if raw.startswith("\\\\?\\") or len(raw) < 248:
-        return candidate
-    if raw.startswith("\\\\"):
-        return Path("\\\\?\\UNC\\" + raw.lstrip("\\"))
-    return Path("\\\\?\\" + raw)
-
-
-def source_output_path(base_dir: Path, source_file: str, suffix: str) -> Path:
-    """Map a safe relative source ID to a mirrored output path."""
-    relative = PurePosixPath(str(source_file).replace("\\", "/"))
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError(f"Unsafe source path: {source_file!r}")
-    source_path = Path(*relative.parts)
-    output = Path(base_dir) / source_path.parent / f"{source_path.stem}{suffix}"
-    if os.name == "nt" and len(str(output.resolve())) >= 248:
-        digest = hashlib.sha256(
-            relative.as_posix().encode("utf-8", errors="replace")
-        ).hexdigest()[:16]
-        compact_stem = source_path.stem[:80].rstrip(" .") or "report"
-        output = (
-            Path(base_dir)
-            / "_long_paths"
-            / f"{compact_stem}-{digest}{suffix}"
-        )
-    return output
-
-
 def _question_keywords(question: str) -> set[str]:
     words = re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]*", question.lower())
     return {w for w in words if len(w) > 2 and w not in _STOPWORDS}
@@ -677,53 +631,6 @@ def rerank_chunks(
     scored.sort(key=lambda x: _rank_key(*x))
     top = scored[:top_k]
     return [t[0] for t in top], [t[1] for t in top]
-
-
-def build_doc_id(source: str, page: int, chunk_idx: int, chunk: str) -> str:
-    digest = hashlib.md5(chunk.encode("utf-8")).hexdigest()[:12]
-    return f"{source}:p{page}:c{chunk_idx}:{digest}"
-
-
-def _add_documents_with_retry(
-    vectorstore: Chroma,
-    docs: List[Document],
-    ids: List[str],
-    batch_size: int,
-    retries: int = 3,
-) -> None:
-    if batch_size <= 0:
-        raise ValueError("RAG_UPSERT_BATCH_SIZE must be greater than 0.")
-
-    total = len(docs)
-    batch_iter = tqdm(
-        range(0, total, batch_size),
-        desc="  Embedding & upserting",
-        unit="batch",
-        leave=False,
-        dynamic_ncols=True,
-    )
-    for start in batch_iter:
-        end = min(start + batch_size, total)
-        batch_iter.set_postfix(chunks=f"{end}/{total}")
-        docs_batch = docs[start:end]
-        ids_batch = ids[start:end]
-        attempt = 0
-        while True:
-            try:
-                vectorstore.add_documents(documents=docs_batch, ids=ids_batch)
-                break
-            except (APIConnectionError, RateLimitError, APIError) as exc:
-                attempt += 1
-                if attempt >= retries:
-                    raise RuntimeError(
-                        f"Vectorstore add_documents failed for chunks {start}-{end - 1}: {exc}"
-                    ) from exc
-                wait_seconds = 2 ** attempt
-                tqdm.write(
-                    f"  Retry {attempt}/{retries - 1} for chunks {start}-{end - 1} "
-                    f"after error: {exc}. Waiting {wait_seconds}s..."
-                )
-                time.sleep(wait_seconds)
 
 
 _EMBED_CACHE: dict[tuple, list] = {}
@@ -760,6 +667,7 @@ def ingest(
 ):
     """Ingest PDFs into Chroma through the selected parser pipeline."""
     from ingestion.pipeline import IngestionPipeline
+    from ingestion.runtime import IngestionRuntime
 
     chosen = (backend or settings.ingestion_backend or "docling").lower()
     if chosen not in {"docling", "mineru"}:
@@ -772,6 +680,10 @@ def ingest(
         settings,
         enable_visuals=enable_visuals,
         partition_only=partition_only,
+        runtime=IngestionRuntime(
+            get_embedder=get_embedder,
+            get_vectorstore=get_vectorstore,
+        ),
     )
     return pipeline.ingest_all(
         rebuild=rebuild,
@@ -994,16 +906,9 @@ def _retrieve_and_rerank(
 
     fetch_n = min(max(top_k * 4, top_k + 12), count)
     chroma_filter = _build_chroma_filter(filter_sources, filter_items, filter_types)
-    try:
-        results = vectorstore.similarity_search_with_score(
-            question, k=fetch_n, filter=chroma_filter
-        )
-    except Exception:
-        # Fallback when ni_item metadata missing on older index entries
-        chroma_filter = _build_chroma_filter(filter_sources, None, filter_types)
-        results = vectorstore.similarity_search_with_score(
-            question, k=fetch_n, filter=chroma_filter
-        )
+    results = vectorstore.similarity_search_with_score(
+        question, k=fetch_n, filter=chroma_filter
+    )
     documents = [r[0].page_content for r in results]
     metadatas  = [r[0].metadata    for r in results]
     distances  = [float(r[1])      for r in results]
@@ -1084,8 +989,19 @@ def query_by_items(
     docs, metas = _retrieve_and_rerank(
         vectorstore, question, top_k, filter_sources, filter_items=items
     )
-    if not docs:
-        return query_context(vectorstore, question, top_k, filter_sources)
+    allowed_items = {int(item) for item in items if int(item) > 0}
+    scoped_pairs = []
+    for document, metadata in zip(docs, metas):
+        try:
+            item = int(metadata.get("ni_item") or 0)
+        except (TypeError, ValueError):
+            item = 0
+        if item in allowed_items:
+            scoped_pairs.append((document, metadata))
+    if not scoped_pairs:
+        return "", []
+    docs = [document for document, _ in scoped_pairs]
+    metas = [metadata for _, metadata in scoped_pairs]
     parts = _format_parts(docs, metas)
     return "\n\n".join(parts), metas
 

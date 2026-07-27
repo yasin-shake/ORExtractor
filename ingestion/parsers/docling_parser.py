@@ -13,6 +13,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from ingestion.config import DoclingExecutionConfig, ParserQualityPolicy
+from ingestion.docling_worker import DoclingWorkerManager
+from ingestion.input_staging import stage_pdf_input
 from ingestion.models import DoclingConversionMetadata, ParserResult
 from ingestion.normalizers.docling import normalize_docling_document
 from ingestion.quality import assess_parser_quality
@@ -66,7 +69,7 @@ def _positive_setting(settings, name: str, default: int) -> int:
 class DoclingParser:
     parser_name = "docling"
 
-    def __init__(self, settings):
+    def __init__(self, settings, *, process_isolation: bool | None = None):
         self.settings = settings
         self.parser_version = _package_version("docling")
         self.artifact_dir = Path(
@@ -74,6 +77,14 @@ class DoclingParser:
         )
         self._converters: OrderedDict[tuple[Any, ...], Any] = OrderedDict()
         self._safe_batch_mode = False
+        self.execution = DoclingExecutionConfig.from_settings(settings)
+        self.quality_policy = ParserQualityPolicy.from_settings(settings)
+        self._process_isolation = (
+            self.execution.process_isolation
+            if process_isolation is None
+            else bool(process_isolation)
+        )
+        self._worker: DoclingWorkerManager | None = None
 
     def cache_signature(self) -> dict[str, Any]:
         return {
@@ -163,6 +174,12 @@ class DoclingParser:
                     )
                 ),
             ),
+            "process_isolation": self._process_isolation,
+            "hard_timeout_seconds": float(
+                self.execution.hard_timeout_seconds
+            ),
+            "segment_pages": self.execution.segment_pages,
+            "segment_min_pages": self.execution.segment_min_pages,
         }
 
     def _pipeline_options(
@@ -554,10 +571,19 @@ class DoclingParser:
         except ImportError:
             pass
 
-    def _convert_local(self, pdf_path: Path):
+    def _convert_local(
+        self,
+        pdf_path: Path,
+        *,
+        page_range: tuple[int, int] | None = None,
+        preflight: dict[str, Any] | None = None,
+    ):
         from docling.datamodel.settings import settings as docling_settings
 
-        preflight = self._preflight_pdf(pdf_path)
+        preflight = preflight or self._preflight_pdf(pdf_path)
+        docling_settings.debug.profile_pipeline_timings = bool(
+            getattr(self.settings, "docling_profiling", True)
+        )
         effective_do_ocr = bool(preflight["effective_do_ocr"])
         effective_table_mode = self._effective_table_mode(preflight)
         fallback_enabled = bool(
@@ -594,18 +620,20 @@ class DoclingParser:
                 safe_batches=safe_batches,
             )
             try:
-                conversion = converter.convert(
-                    pdf_path,
-                    raises_on_error=False,
-                    max_num_pages=int(
+                convert_options = {
+                    "raises_on_error": False,
+                    "max_num_pages": int(
                         getattr(self.settings, "docling_max_pages", 1000)
                     ),
-                    max_file_size=int(
+                    "max_file_size": int(
                         getattr(self.settings, "docling_max_file_mb", 2048)
                         * 1024
                         * 1024
                     ),
-                )
+                }
+                if page_range is not None:
+                    convert_options["page_range"] = page_range
+                conversion = converter.convert(pdf_path, **convert_options)
                 if self._conversion_memory_failure(conversion):
                     raise RuntimeError(
                         "Docling conversion reported a native-memory failure."
@@ -617,6 +645,7 @@ class DoclingParser:
                     "page_batch_size": page_batch_size,
                     "safe_batch_fallback_used": safe_batches,
                     "converter_reused": converter_reused,
+                    "page_range": list(page_range) if page_range else None,
                 }
                 if safe_batches:
                     self._safe_batch_mode = True
@@ -693,18 +722,24 @@ class DoclingParser:
             "service": True,
         }
 
-    def parse(
+    def _parse_document(
         self,
         pdf_path: Path,
         *,
         source_file: str | None = None,
         artifact_dir: Path | None = None,
+        page_range: tuple[int, int] | None = None,
+        preflight: dict[str, Any] | None = None,
     ) -> ParserResult:
         source_file = source_file or pdf_path.name
         mode = str(getattr(self.settings, "docling_execution_mode", "local")).lower()
         started = time.perf_counter()
         if mode == "local":
-            conversion, runtime = self._convert_local(pdf_path)
+            conversion, runtime = self._convert_local(
+                pdf_path,
+                page_range=page_range,
+                preflight=preflight,
+            )
         elif mode == "serve":
             conversion, runtime = self._convert_service(pdf_path)
         else:
@@ -746,21 +781,7 @@ class DoclingParser:
             elements,
             page_count=page_count,
             conversion_status=status,
-            min_text_page_coverage=getattr(
-                self.settings, "parser_min_text_page_coverage", 0.90
-            ),
-            max_empty_page_ratio=getattr(
-                self.settings, "parser_max_empty_page_ratio", 0.10
-            ),
-            max_replacement_char_ratio=getattr(
-                self.settings, "parser_max_replacement_char_ratio", 0.01
-            ),
-            min_table_valid_ratio=getattr(
-                self.settings, "parser_min_table_valid_ratio", 0.80
-            ),
-            require_picture_crops=getattr(
-                self.settings, "parser_require_picture_crops", False
-            ),
+            **self.quality_policy.assessment_kwargs(),
         )
         duration_ms = (time.perf_counter() - started) * 1000
         quality.duration_ms = duration_ms
@@ -824,3 +845,212 @@ class DoclingParser:
             result.quality.model_dump_json(indent=2), encoding="utf-8"
         )
         return result
+
+    def _worker_manager(self) -> DoclingWorkerManager:
+        if self._worker is None:
+            self._worker = DoclingWorkerManager(
+                settings=dict(vars(self.settings)),
+                timeout_seconds=self.execution.hard_timeout_seconds,
+            )
+        return self._worker
+
+    def _combine_segments(
+        self,
+        results: list[tuple[tuple[int, int], ParserResult]],
+        *,
+        source_file: str,
+        artifact_dir: Path,
+        page_count: int,
+        preflight: dict[str, Any],
+    ) -> ParserResult:
+        elements = []
+        seen_ids: set[str] = set()
+        errors: list[str] = []
+        warnings: list[str] = []
+        artifacts: dict[str, str] = {}
+        duration_ms = 0.0
+        statuses: list[str] = []
+        segment_runtime: list[dict[str, Any]] = []
+        for page_range, result in results:
+            duration_ms += result.duration_ms
+            statuses.append(result.status)
+            errors.extend(result.errors)
+            warnings.extend(result.warnings)
+            for element in result.elements:
+                if element.element_id not in seen_ids:
+                    elements.append(element)
+                    seen_ids.add(element.element_id)
+            label = f"{page_range[0]:04d}-{page_range[1]:04d}"
+            artifacts.update(
+                {
+                    f"segment_{label}_{name}": path
+                    for name, path in result.artifact_paths.items()
+                }
+            )
+            segment_runtime.append(
+                {
+                    "page_range": list(page_range),
+                    "duration_ms": result.duration_ms,
+                    "status": result.status,
+                    "runtime": result.metadata.get("runtime", {}),
+                }
+            )
+        elements.sort(
+            key=lambda element: (
+                element.page_number,
+                int(element.metadata.get("docling_ordinal", 0)),
+            )
+        )
+        accepted_statuses = {"success", "completed"}
+        status = (
+            "success"
+            if statuses and all(item in accepted_statuses for item in statuses)
+            else "partial_success"
+        )
+        quality = assess_parser_quality(
+            elements,
+            page_count=page_count,
+            conversion_status=status,
+            **self.quality_policy.assessment_kwargs(),
+        )
+        quality.duration_ms = duration_ms
+        runtime = {
+            "preflight": preflight,
+            "segmented": True,
+            "segment_count": len(results),
+            "segments": segment_runtime,
+        }
+        report_dir = Path(artifact_dir) / "parsers" / "docling"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        profiling_path = report_dir / "profiling.json"
+        profiling_path.write_text(
+            json.dumps(
+                {
+                    "duration_ms": duration_ms,
+                    "timings": {},
+                    "runtime": runtime,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        result = ParserResult(
+            source_file=source_file,
+            parser=self.parser_name,
+            parser_version=self.parser_version,
+            status=status,
+            elements=elements,
+            artifact_paths={
+                **artifacts,
+                "profiling": str(profiling_path),
+            },
+            page_count=page_count,
+            duration_ms=duration_ms,
+            warnings=list(dict.fromkeys(warnings)),
+            errors=list(dict.fromkeys(errors)),
+            quality=quality,
+            metadata={
+                **DoclingConversionMetadata(
+                    execution_mode="local",
+                    conversion_status=status,
+                    page_count=page_count,
+                    model_artifact_revision=str(
+                        getattr(
+                            self.settings,
+                            "docling_model_artifact_revision",
+                            "",
+                        )
+                    ),
+                    pipeline_options=self.cache_signature(),
+                ).model_dump(),
+                "runtime": runtime,
+            },
+        )
+        (report_dir / "quality.json").write_text(
+            quality.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+        return result
+
+    def parse(
+        self,
+        pdf_path: Path,
+        *,
+        source_file: str | None = None,
+        artifact_dir: Path | None = None,
+    ) -> ParserResult:
+        source_file = source_file or pdf_path.name
+        mode = str(
+            getattr(self.settings, "docling_execution_mode", "local")
+        ).lower()
+        if mode != "local":
+            return self._parse_document(
+                pdf_path,
+                source_file=source_file,
+                artifact_dir=artifact_dir,
+            )
+
+        report_dir = artifact_dir or self.artifact_dir / pdf_path.stem
+        work_root = self.execution.work_dir
+        with stage_pdf_input(pdf_path, work_root) as staged:
+            if not self._process_isolation:
+                return self._parse_document(
+                    staged.input_path,
+                    source_file=source_file,
+                    artifact_dir=report_dir,
+                )
+
+            preflight = self._preflight_pdf(staged.input_path)
+            page_count = int(preflight.get("page_count", 0) or 0)
+            segment_pages = self.execution.segment_pages
+            segment_min_pages = self.execution.segment_min_pages
+            manager = self._worker_manager()
+            if (
+                segment_pages > 0
+                and page_count >= segment_min_pages
+                and page_count > segment_pages
+            ):
+                results: list[tuple[tuple[int, int], ParserResult]] = []
+                for first_page in range(1, page_count + 1, segment_pages):
+                    last_page = min(
+                        page_count,
+                        first_page + segment_pages - 1,
+                    )
+                    page_range = (first_page, last_page)
+                    segment_dir = (
+                        Path(report_dir)
+                        / "segments"
+                        / f"{first_page:04d}-{last_page:04d}"
+                    )
+                    results.append(
+                        (
+                            page_range,
+                            manager.parse(
+                                staged.input_path,
+                                source_file=source_file,
+                                artifact_dir=segment_dir,
+                                page_range=page_range,
+                                preflight=preflight,
+                            ),
+                        )
+                    )
+                return self._combine_segments(
+                    results,
+                    source_file=source_file,
+                    artifact_dir=Path(report_dir),
+                    page_count=page_count,
+                    preflight=preflight,
+                )
+            return manager.parse(
+                staged.input_path,
+                source_file=source_file,
+                artifact_dir=Path(report_dir),
+                preflight=preflight,
+            )
+
+    def close(self) -> None:
+        if self._worker is not None:
+            self._worker.close()
+            self._worker = None
+        self._converters.clear()

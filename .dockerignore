@@ -19,6 +19,8 @@ build
 .chroma_db
 extracted_data
 knowledge
+ingestion_artifacts
+.ingestion_work
 
 .claude
 .DS_Store

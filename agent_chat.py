@@ -214,10 +214,6 @@ def _tool_search_by_items(ctx: AgentRunContext, items: str, query: str = "") -> 
     context, metadatas = query_by_items(
         ctx.vectorstore, search_q, item_nums, top_k, ctx.pdf_filter
     )
-    if not context:
-        context, metadatas = query_context(
-            ctx.vectorstore, search_q, top_k, ctx.pdf_filter
-        )
     _append_sources(ctx, metadatas)
     if context and len(context) > _MAX_CONTEXT_CHARS:
         context = context[:_MAX_CONTEXT_CHARS] + "\n… [truncated]"

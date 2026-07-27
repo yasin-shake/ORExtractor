@@ -122,6 +122,31 @@ def test_text_only_manifest_is_resumable_in_text_only_mode(tmp_path):
     assert should_skip_pdf(entry, pdf, settings) is False
 
 
+def test_accurate_table_manifest_satisfies_fast_text_first_request(tmp_path):
+    pdf = tmp_path / "accurate.pdf"
+    pdf.write_bytes(b"%PDF accurate")
+    settings = _Settings()
+    settings.docling_table_mode = "accurate"
+    entry = build_manifest_entry(
+        pdf,
+        settings,
+        element_count=1,
+        visual_count=0,
+        table_count=1,
+        indexed_chunk_count=1,
+        failed_element_ids=[],
+        parser_result=ParserResult(
+            source_file=pdf.name,
+            parser="docling",
+            parser_version="test",
+            quality=ParserQualityReport(score=1.0),
+        ),
+    )
+
+    settings.docling_table_mode = "fast"
+    assert should_skip_pdf(entry, pdf, settings) is True
+
+
 def test_parser_cache_roundtrip_and_source_invalidation(tmp_path):
     class _Parser:
         def cache_signature(self):
@@ -154,3 +179,61 @@ def test_parser_cache_roundtrip_and_source_invalidation(tmp_path):
         load_parser_cache(artifact_dir, pdf, _Settings(), _Parser())
         is None
     )
+
+
+def test_degraded_parser_result_is_not_persisted_or_resumable(tmp_path):
+    class _Parser:
+        def cache_signature(self):
+            return {"parser": "docling", "version": "test-version"}
+
+    pdf = tmp_path / "partial.pdf"
+    pdf.write_bytes(b"%PDF partial")
+    artifact_dir = tmp_path / "artifacts"
+    settings = _Settings()
+    degraded = ParserResult(
+        source_file=pdf.name,
+        parser="docling",
+        parser_version="test-version",
+        status="degraded",
+        elements=[
+            ElementRecord(
+                element_id="partial",
+                source_file=pdf.name,
+                category="NarrativeText",
+                text="Only a small part of the report",
+            )
+        ],
+        quality=ParserQualityReport(
+            score=0.53,
+            text_coverage=0.32,
+            reasons=["low_text_page_coverage"],
+        ),
+    )
+
+    assert save_parser_cache(
+        artifact_dir,
+        pdf,
+        settings,
+        _Parser(),
+        degraded,
+    ) is False
+    assert load_parser_cache(
+        artifact_dir,
+        pdf,
+        settings,
+        _Parser(),
+    ) is None
+
+    entry = build_manifest_entry(
+        pdf,
+        settings,
+        element_count=1,
+        visual_count=0,
+        table_count=0,
+        indexed_chunk_count=1,
+        failed_element_ids=[],
+        parser_result=degraded,
+    )
+    assert entry["ingestion_acceptance"]["accepted"] is False
+    assert entry["ingestion_acceptance"]["retryable"] is True
+    assert should_skip_pdf(entry, pdf, settings) is False

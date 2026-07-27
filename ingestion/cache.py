@@ -16,6 +16,7 @@ from ingestion.models import (
     ElementRecord,
     ParserResult,
 )
+from ingestion.config import ParserQualityPolicy
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -115,23 +116,9 @@ def parser_policy_signature(settings) -> dict:
                 settings, "docling_model_artifact_revision", ""
             ),
         },
-        "quality_policy": {
-            "min_text_page_coverage": getattr(
-                settings, "parser_min_text_page_coverage", 0.90
-            ),
-            "max_empty_page_ratio": getattr(
-                settings, "parser_max_empty_page_ratio", 0.10
-            ),
-            "max_replacement_char_ratio": getattr(
-                settings, "parser_max_replacement_char_ratio", 0.01
-            ),
-            "min_table_valid_ratio": getattr(
-                settings, "parser_min_table_valid_ratio", 0.80
-            ),
-            "require_picture_crops": getattr(
-                settings, "parser_require_picture_crops", False
-            ),
-        },
+        "quality_policy": ParserQualityPolicy.from_settings(
+            settings
+        ).signature(),
     }
 
 
@@ -145,6 +132,37 @@ def _parser_signature(pdf_path: Path, parser) -> dict:
         if isinstance(candidate, dict):
             signature["parser_signature"] = candidate
     return signature
+
+
+def parser_result_accepted(
+    result: ParserResult,
+    settings,
+    *,
+    require_elements: bool = True,
+) -> bool:
+    """Return whether a parser result is complete enough to persist and skip."""
+    if require_elements and not result.elements:
+        return False
+    if result.status.lower() not in {
+        "success",
+        "completed",
+        "partial_success",
+    }:
+        return False
+    if result.quality.reasons:
+        return False
+    policy = ParserQualityPolicy.from_settings(settings)
+    if result.quality.score < policy.min_cache_quality_score:
+        return False
+    expected = int(result.quality.expected_page_count or 0)
+    observed = int(result.quality.observed_page_count or 0)
+    if expected and observed:
+        if (
+            result.quality.page_count_agreement
+            < policy.min_page_count_agreement
+        ):
+            return False
+    return True
 
 
 def load_parser_cache(
@@ -166,6 +184,8 @@ def load_parser_cache(
         result = ParserResult.model_validate_json(
             result_path.read_text(encoding="utf-8")
         )
+        if not parser_result_accepted(result, settings):
+            return None
         for element in result.elements:
             if element.image_path and not Path(element.image_path).exists():
                 return None
@@ -180,8 +200,18 @@ def save_parser_cache(
     settings,
     parser,
     result: ParserResult,
-) -> None:
+) -> bool:
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    if not parser_result_accepted(result, settings):
+        for path in (
+            artifact_dir / "parser_result.json",
+            artifact_dir / "parser_cache.json",
+        ):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        return False
     (artifact_dir / "parser_result.json").write_text(
         result.model_dump_json(indent=2), encoding="utf-8"
     )
@@ -193,6 +223,7 @@ def save_parser_cache(
         ),
         encoding="utf-8",
     )
+    return True
 
 
 class EnrichmentCache:
@@ -284,6 +315,59 @@ def fingerprint_legacy(path: Path) -> str:
     return f"{st.st_mtime_ns}:{st.st_size}"
 
 
+def manifest_entry_accepted(entry: dict, settings) -> bool:
+    acceptance = entry.get("ingestion_acceptance")
+    if isinstance(acceptance, dict):
+        return bool(acceptance.get("accepted", False))
+    quality = entry.get("parser_quality")
+    if not isinstance(quality, dict):
+        return False
+    if quality.get("reasons"):
+        return False
+    policy = ParserQualityPolicy.from_settings(settings)
+    if (
+        float(quality.get("score", 0.0))
+        < policy.min_cache_quality_score
+    ):
+        return False
+    expected = int(quality.get("expected_page_count", 0) or 0)
+    observed = int(quality.get("observed_page_count", 0) or 0)
+    if (
+        expected
+        and observed
+        and float(quality.get("page_count_agreement", 0.0))
+        < policy.min_page_count_agreement
+    ):
+        return False
+    return True
+
+
+def _parser_policy_compatible(existing: Any, requested: Any) -> bool:
+    """Allow higher-fidelity cached output to satisfy a faster request."""
+    if existing == requested:
+        return True
+    if not isinstance(existing, dict) or not isinstance(requested, dict):
+        return False
+    existing_copy = json.loads(json.dumps(existing))
+    requested_copy = json.loads(json.dumps(requested))
+    existing_docling = existing_copy.get("docling_options", {})
+    requested_docling = requested_copy.get("docling_options", {})
+    if (
+        existing_docling.get("table_mode") == "accurate"
+        and requested_docling.get("table_mode") == "fast"
+    ):
+        existing_docling["table_mode"] = "fast"
+    existing_quality = existing_copy.get("quality_policy", {})
+    requested_quality = requested_copy.get("quality_policy", {})
+    for key in (
+        "min_cache_quality_score",
+        "min_page_count_agreement",
+    ):
+        if key not in existing_quality and key in requested_quality:
+            existing_quality[key] = requested_quality[key]
+    return existing_copy == requested_copy
+
+
 def should_skip_pdf(entry: Any, pdf_path: Path, settings) -> bool:
     """Return True if this PDF can be skipped given current pipeline versions."""
     if entry is None:
@@ -294,9 +378,14 @@ def should_skip_pdf(entry: Any, pdf_path: Path, settings) -> bool:
         return False
     if not isinstance(entry, dict):
         return False
+    if not manifest_entry_accepted(entry, settings):
+        return False
     if entry.get("source_sha256") != file_sha256(pdf_path):
         return False
-    if entry.get("parser_policy") != parser_policy_signature(settings):
+    if not _parser_policy_compatible(
+        entry.get("parser_policy"),
+        parser_policy_signature(settings),
+    ):
         return False
     if entry.get("pipeline_version") != PIPELINE_VERSION:
         return False
@@ -379,6 +468,14 @@ def build_manifest_entry(
     visual_enrichment_enabled: bool = True,
     parser_result: ParserResult,
 ) -> dict:
+    accepted = (
+        element_count > 0
+        and parser_result_accepted(
+            parser_result,
+            settings,
+            require_elements=False,
+        )
+    )
     entry = {
         "source_sha256": file_sha256(pdf_path),
         "fingerprint": fingerprint_legacy(pdf_path),
@@ -433,6 +530,13 @@ def build_manifest_entry(
         "table_count": table_count,
         "indexed_chunk_count": indexed_chunk_count,
         "failed_element_ids": failed_element_ids,
+        "ingestion_acceptance": {
+            "accepted": accepted,
+            "retryable": not accepted,
+            "status": parser_result.status,
+            "quality_score": parser_result.quality.score,
+            "reason_codes": list(parser_result.quality.reasons),
+        },
     }
     entry.update(
         {

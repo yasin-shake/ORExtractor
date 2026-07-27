@@ -5,9 +5,18 @@
 <meta name="viewport" content="width=1440">
 <title>ORExtractor</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
+      crossorigin="anonymous"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"
+        integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+"
+        crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"
+        integrity="sha384-JEyTNhjM6R1ElGoJns4U2Ln4ofPcqzSsynQkmEc/KGy6336qAZl70tDLufbkla+3"
+        crossorigin="anonymous"></script>
 <style>
 /* ── Theme tokens ─────────────────────────────────────────────────── */
 :root[data-theme="light"] {
@@ -2078,10 +2087,18 @@ function markdownLite(raw) {
 
 function renderMarkdown(raw) {
   if (!raw) return '';
-  if (typeof marked !== 'undefined') {
+  if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
     try {
       marked.setOptions({ gfm: true, breaks: false, headerIds: false, mangle: false });
-      return marked.parse(raw);
+      return DOMPurify.sanitize(marked.parse(raw), {
+        ALLOWED_TAGS: [
+          'p','br','hr','h1','h2','h3','h4','h5','h6',
+          'strong','em','del','blockquote','pre','code',
+          'ul','ol','li','table','thead','tbody','tr','th','td','a'
+        ],
+        ALLOWED_ATTR: ['href','title'],
+        ALLOW_DATA_ATTR: false
+      });
     } catch (e) {
       console.warn('marked parse failed', e);
     }
@@ -2306,7 +2323,7 @@ function renderModels() {
   const tabs = $('modelsTabs');
   if (!tabs) return;
   if (_spatialModels !== null) { _renderModelTabs(); return; }
-  fetch('/api/spatial-models')
+  fetch('/api/spatial-models', { headers: apiHdr() })
     .then(r => r.json())
     .then(d => { _spatialModels = d.models || []; _renderModelTabs(); })
     .catch(() => { _spatialModels = []; _renderModelTabs(); });

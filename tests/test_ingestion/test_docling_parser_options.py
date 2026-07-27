@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import fitz
 import pytest
 
+from ingestion.models import ElementRecord, ParserQualityReport, ParserResult
 from ingestion.parsers.docling_parser import DoclingParser
 
 
@@ -185,3 +186,87 @@ def test_native_memory_failure_retries_safe_batch(monkeypatch, tmp_path):
     assert conversion.errors == []
     assert runtime["safe_batch_fallback_used"] is True
     assert runtime["page_batch_size"] == 1
+
+
+def test_large_document_is_checkpointed_into_page_segments(
+    monkeypatch,
+    tmp_path,
+):
+    pdf_path = tmp_path / "large.pdf"
+    document = fitz.open()
+    for index in range(5):
+        document.new_page().insert_text(
+            (72, 72),
+            f"Native page {index + 1} " * 20,
+        )
+    document.save(pdf_path)
+    document.close()
+
+    class _Worker:
+        def __init__(self):
+            self.calls = []
+
+        def parse(
+            self,
+            _path,
+            *,
+            source_file,
+            artifact_dir,
+            page_range=None,
+            preflight=None,
+        ):
+            self.calls.append(page_range)
+            first, last = page_range
+            elements = [
+                ElementRecord(
+                    element_id=f"p{page}",
+                    source_file=source_file,
+                    category="NarrativeText",
+                    text=f"Page {page} body",
+                    page_number=page,
+                    metadata={"docling_ordinal": page},
+                )
+                for page in range(first, last + 1)
+            ]
+            return ParserResult(
+                source_file=source_file,
+                parser="docling",
+                parser_version="test",
+                elements=elements,
+                page_count=len(elements),
+                duration_ms=10,
+                quality=ParserQualityReport(
+                    score=1.0,
+                    text_coverage=1.0,
+                ),
+                metadata={"runtime": {}},
+            )
+
+    worker = _Worker()
+    parser = DoclingParser(
+        _settings(
+            docling_process_isolation=True,
+            docling_segment_min_pages=3,
+            docling_segment_pages=2,
+            ingest_work_dir=tmp_path / "work",
+            artifact_dir=tmp_path / "artifacts",
+        )
+    )
+    monkeypatch.setattr(parser, "_worker_manager", lambda: worker)
+
+    result = parser.parse(
+        pdf_path,
+        source_file="nested/large.pdf",
+        artifact_dir=tmp_path / "artifacts" / "large",
+    )
+
+    assert worker.calls == [(1, 2), (3, 4), (5, 5)]
+    assert result.page_count == 5
+    assert [element.page_number for element in result.elements] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]
+    assert result.metadata["runtime"]["segmented"] is True

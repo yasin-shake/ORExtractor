@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import time
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
+from ingestion.config import ParserQualityPolicy
+from ingestion.input_staging import stage_pdf_input
 from ingestion.models import MinerUConversionMetadata, ParserResult
 from ingestion.normalizers.mineru import normalize_mineru_content
 from ingestion.quality import assess_parser_quality
@@ -32,6 +35,7 @@ class MinerUParser:
         self.artifact_dir = Path(
             getattr(settings, "artifact_dir", Path("ingestion_artifacts"))
         )
+        self.quality_policy = ParserQualityPolicy.from_settings(settings)
 
     def cache_signature(self) -> dict[str, Any]:
         return {
@@ -40,6 +44,35 @@ class MinerUParser:
             "execution_mode": getattr(self.settings, "mineru_execution_mode", "service"),
             "backend": getattr(self.settings, "mineru_backend", "pipeline"),
         }
+
+    def readiness_error(self) -> str | None:
+        mode = str(
+            getattr(self.settings, "mineru_execution_mode", "service")
+        ).lower()
+        if mode == "service":
+            if not str(
+                getattr(self.settings, "mineru_api_url", "") or ""
+            ).strip():
+                return (
+                    "MinerU fallback service is not configured. Set "
+                    "MINERU_API_URL or use MINERU_EXECUTION_MODE=cli."
+                )
+            return None
+        if mode == "cli":
+            command = str(
+                getattr(self.settings, "mineru_command", "mineru")
+                or "mineru"
+            )
+            if shutil.which(command) is None:
+                return (
+                    f"MinerU command {command!r} was not found. Install MinerU "
+                    "in its isolated environment or configure MINERU_API_URL."
+                )
+            return None
+        return (
+            "MINERU_EXECUTION_MODE must be 'service' or 'cli', "
+            f"got {mode!r}."
+        )
 
     def _service(self, pdf_path: Path, output_dir: Path) -> list[dict[str, Any]]:
         endpoint = str(getattr(self.settings, "mineru_api_url", "") or "").rstrip("/")
@@ -135,14 +168,23 @@ class MinerUParser:
             artifact_dir or self.artifact_dir / pdf_path.stem
         ) / "parsers" / "mineru"
         output_dir.mkdir(parents=True, exist_ok=True)
-        if mode == "service":
-            content = self._service(pdf_path, output_dir)
-        elif mode == "cli":
-            content = self._cli(pdf_path, output_dir)
-        else:
-            raise ValueError(
-                f"MINERU_EXECUTION_MODE must be 'service' or 'cli', got {mode!r}"
+        work_root = Path(
+            getattr(
+                self.settings,
+                "ingest_work_dir",
+                Path(".ingestion_work"),
             )
+        )
+        with stage_pdf_input(pdf_path, work_root) as staged:
+            if mode == "service":
+                content = self._service(staged.input_path, output_dir)
+            elif mode == "cli":
+                content = self._cli(staged.input_path, output_dir)
+            else:
+                raise ValueError(
+                    "MINERU_EXECUTION_MODE must be 'service' or 'cli', "
+                    f"got {mode!r}"
+                )
 
         normalized_path = output_dir / "content_list.json"
         normalized_path.write_text(
@@ -160,21 +202,7 @@ class MinerUParser:
             elements,
             page_count=page_count,
             conversion_status="success",
-            min_text_page_coverage=getattr(
-                self.settings, "parser_min_text_page_coverage", 0.90
-            ),
-            max_empty_page_ratio=getattr(
-                self.settings, "parser_max_empty_page_ratio", 0.10
-            ),
-            max_replacement_char_ratio=getattr(
-                self.settings, "parser_max_replacement_char_ratio", 0.01
-            ),
-            min_table_valid_ratio=getattr(
-                self.settings, "parser_min_table_valid_ratio", 0.80
-            ),
-            require_picture_crops=getattr(
-                self.settings, "parser_require_picture_crops", False
-            ),
+            **self.quality_policy.assessment_kwargs(),
         )
         duration_ms = (time.perf_counter() - started) * 1000
         quality.duration_ms = duration_ms

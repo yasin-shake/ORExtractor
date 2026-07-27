@@ -1,0 +1,3 @@
+# Optional parser/chunker comparison tools. Not required for production ingest.
+-r requirements.txt
+langchain-docling==2.0.0

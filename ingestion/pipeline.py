@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from copy import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List, Optional
@@ -19,13 +21,17 @@ from ingestion.cache import (
     file_sha256,
     load_ingest_manifest,
     load_parser_cache,
+    manifest_entry_accepted,
     save_ingest_manifest,
     save_parser_cache,
     should_skip_pdf,
+    parser_result_accepted,
 )
 from ingestion.chunking import elements_to_documents
+from ingestion.config import DoclingExecutionConfig
 from ingestion.context import annotate_hierarchy
 from ingestion.enrichment import enrich_elements
+from ingestion.indexing import add_documents_with_retry, build_doc_id
 from ingestion.models import (
     PIPELINE_VERSION,
     IngestionError,
@@ -34,6 +40,13 @@ from ingestion.models import (
     ReportIngestStats,
 )
 from ingestion.parsers.router import get_parser_router
+from ingestion.runtime import IngestionRuntime
+from ingestion.sources import (
+    filesystem_path,
+    iter_pdf_paths,
+    pdf_source_id,
+    source_output_path,
+)
 from ingestion.telemetry import configure_langsmith, stage_span
 from ingestion.visuals import reconstruct_visuals
 
@@ -61,6 +74,47 @@ def _delete_document_ids(vectorstore, document_ids: set[str]) -> None:
         collection.delete(ids=sorted(document_ids))
         return
     vectorstore.delete(ids=sorted(document_ids))
+
+
+def _delete_collection(
+    client,
+    collection_name: str,
+    *,
+    missing_ok: bool,
+) -> None:
+    try:
+        client.delete_collection(name=collection_name)
+    except chromadb.errors.NotFoundError:
+        if not missing_ok:
+            raise
+
+
+def _promote_rebuilt_collection(
+    client,
+    rebuilt_collection,
+    *,
+    active_name: str,
+) -> None:
+    """Replace the active collection while retaining a rollback copy."""
+    backup_name = f"{active_name}__backup_{uuid.uuid4().hex}"
+    active_collection = None
+    try:
+        active_collection = client.get_collection(name=active_name)
+    except chromadb.errors.NotFoundError:
+        pass
+
+    if active_collection is not None:
+        active_collection.modify(name=backup_name)
+
+    try:
+        rebuilt_collection.modify(name=active_name)
+    except Exception:
+        if active_collection is not None:
+            active_collection.modify(name=active_name)
+        raise
+
+    if active_collection is not None:
+        _delete_collection(client, backup_name, missing_ok=False)
 
 
 @dataclass
@@ -99,22 +153,52 @@ def _merge_metrics(target: IngestionMetrics, source: IngestionMetrics) -> None:
 
 
 class IngestionPipeline:
-    def __init__(self, settings, *, enable_visuals: bool = True, partition_only: bool = False):
-        self.settings = settings
-        self.enable_visuals = enable_visuals and getattr(settings, "visual_enrichment_enabled", True)
+    def __init__(
+        self,
+        settings,
+        *,
+        enable_visuals: bool = True,
+        partition_only: bool = False,
+        runtime: IngestionRuntime | None = None,
+    ):
+        self.settings = copy(settings)
+        self.runtime = runtime
+        self.enable_visuals = enable_visuals and getattr(
+            self.settings,
+            "visual_enrichment_enabled",
+            True,
+        )
         self.partition_only = partition_only
-        settings.resolved_visual_enrichment_enabled = self.enable_visuals
+        self.settings.resolved_visual_enrichment_enabled = self.enable_visuals
         if (
             not self.enable_visuals
             and not partition_only
-            and not getattr(settings, "parser_require_picture_crops", False)
+            and not getattr(
+                self.settings,
+                "parser_require_picture_crops",
+                False,
+            )
         ):
             # Text-only ingestion does not consume Docling page/picture crops.
             # Disabling them reduces rendering and retained-image overhead.
-            settings.docling_generate_page_images = False
-            settings.docling_generate_picture_images = False
-        self.parser_router = get_parser_router(settings)
-        configure_langsmith(settings)
+            self.settings.docling_generate_page_images = False
+            self.settings.docling_generate_picture_images = False
+            text_first_mode = DoclingExecutionConfig.from_settings(
+                self.settings
+            ).text_first_table_mode
+            if text_first_mode not in {
+                "fast",
+                "accurate",
+                "configured",
+            }:
+                raise ValueError(
+                    "DOCLING_TEXT_FIRST_TABLE_MODE must be 'fast', "
+                    f"'accurate', or 'configured', got {text_first_mode!r}"
+                )
+            if text_first_mode != "configured":
+                self.settings.docling_table_mode = text_first_mode
+        self.parser_router = get_parser_router(self.settings)
+        configure_langsmith(self.settings)
 
     def ingest_all(
         self,
@@ -122,15 +206,6 @@ class IngestionPipeline:
         only_file: Optional[str] = None,
         reprocess_visuals: bool = False,
     ) -> IngestionResult:
-        from rag_app import (
-            get_embedder,
-            get_vectorstore,
-            filesystem_path,
-            iter_pdf_paths,
-            pdf_source_id,
-            source_output_path,
-        )
-
         t_total = time.perf_counter()
         pdf_paths = list(iter_pdf_paths(self.settings.knowledge_dir, self.settings.extra_pdf_dirs))
         discovered = [
@@ -180,22 +255,42 @@ class IngestionPipeline:
         if not discovered:
             dirs = [self.settings.knowledge_dir] + list(self.settings.extra_pdf_dirs)
             print(f"No PDFs found in {', '.join(str(d) for d in dirs)}")
+            if rebuild and not self.partition_only:
+                chroma_client = chromadb.PersistentClient(
+                    path=str(self.settings.chroma_dir)
+                )
+                _delete_collection(
+                    chroma_client,
+                    self.settings.collection_name,
+                    missing_ok=True,
+                )
+                save_ingest_manifest(self.settings.chroma_dir, {})
             return IngestionResult(status="completed", files=[])
 
         vectorstore = None
+        chroma_client = None
+        rebuild_collection_name = None
         if not self.partition_only:
+            if self.runtime is None:
+                raise RuntimeError(
+                    "IngestionRuntime is required for vector ingestion."
+                )
             # Resolve and health-check the complete embedding backend before a
             # requested rebuild deletes the existing collection.
-            embedder = get_embedder(self.settings)
+            embedder = self.runtime.get_embedder(self.settings)
             chroma_client = chromadb.PersistentClient(path=str(self.settings.chroma_dir))
             if rebuild:
-                try:
-                    chroma_client.delete_collection(name=self.settings.collection_name)
-                    print("Rebuilt vector index (old records removed).")
-                except Exception as exc:
-                    print(f"Warning: could not delete collection '{self.settings.collection_name}': {exc}")
-
-            vectorstore = get_vectorstore(self.settings, embedder)
+                rebuild_collection_name = (
+                    f"{self.settings.collection_name}__rebuild_{uuid.uuid4().hex}"
+                )
+                vectorstore_settings = copy(self.settings)
+                vectorstore_settings.collection_name = rebuild_collection_name
+            else:
+                vectorstore_settings = self.settings
+            vectorstore = self.runtime.get_vectorstore(
+                vectorstore_settings,
+                embedder,
+            )
 
         manifest = {} if rebuild else load_ingest_manifest(self.settings.chroma_dir)
         result = IngestionResult(status="completed", files=[])
@@ -229,9 +324,24 @@ class IngestionPipeline:
                     visual_enrichment_enabled=self.enable_visuals,
                     parser_result=work.parser_result,
                 )
-                save_ingest_manifest(self.settings.chroma_dir, manifest)
+                if not rebuild:
+                    save_ingest_manifest(self.settings.chroma_dir, manifest)
 
         def record_failure(source_file: str, exc: Exception) -> None:
+            existing_entry = manifest.get(source_file)
+            if (
+                vectorstore is not None
+                and isinstance(existing_entry, dict)
+                and not manifest_entry_accepted(
+                    existing_entry,
+                    self.settings,
+                )
+            ):
+                stale_ids = _source_document_ids(
+                    vectorstore,
+                    source_file,
+                )
+                _delete_document_ids(vectorstore, stale_ids)
             result.errors.append(
                 IngestionError(
                     element_id="",
@@ -401,12 +511,81 @@ class IngestionPipeline:
             result.status = (
                 "completed_with_errors" if result.reports else "failed"
             )
+        if rebuild and not self.partition_only:
+            assert chroma_client is not None
+            assert rebuild_collection_name is not None
+            if result.errors:
+                _delete_collection(
+                    chroma_client,
+                    rebuild_collection_name,
+                    missing_ok=True,
+                )
+            else:
+                rebuilt_collection = getattr(
+                    vectorstore,
+                    "_collection",
+                    None,
+                )
+                if rebuilt_collection is None:
+                    _delete_collection(
+                        chroma_client,
+                        rebuild_collection_name,
+                        missing_ok=True,
+                    )
+                    raise RuntimeError(
+                        "Cannot promote rebuilt index: vector store does not "
+                        "expose its Chroma collection."
+                    )
+                expected_sources = {
+                    source_file.casefold()
+                    for _, source_file in discovered
+                }
+                accepted_sources = {
+                    source_file.casefold()
+                    for source_file in result.files
+                }
+                manifest_sources = {
+                    source_file.casefold()
+                    for source_file in manifest
+                }
+                expected_vectors = sum(
+                    report.indexed_chunks
+                    for report in result.reports
+                )
+                actual_vectors = int(rebuilt_collection.count())
+                if (
+                    accepted_sources != expected_sources
+                    or manifest_sources != expected_sources
+                    or actual_vectors != expected_vectors
+                ):
+                    _delete_collection(
+                        chroma_client,
+                        rebuild_collection_name,
+                        missing_ok=True,
+                    )
+                    raise RuntimeError(
+                        "Rebuilt index validation failed before promotion: "
+                        f"sources={len(accepted_sources)}/"
+                        f"{len(expected_sources)}, "
+                        f"manifest={len(manifest_sources)}/"
+                        f"{len(expected_sources)}, "
+                        f"vectors={actual_vectors}/{expected_vectors}."
+                    )
+                _promote_rebuilt_collection(
+                    chroma_client,
+                    rebuilt_collection,
+                    active_name=self.settings.collection_name,
+                )
+                save_ingest_manifest(self.settings.chroma_dir, manifest)
         print(
             f"\nDocument ingestion complete. "
             f"{sum(r.indexed_chunks for r in result.reports)} chunks across "
             f"{len(result.reports)} report(s) in '{self.settings.collection_name}' "
             f"using {getattr(self.settings, 'resolved_embedding_provider', 'unknown')}."
         )
+        close_router = getattr(self.parser_router, "close", None)
+        if callable(close_router):
+            close_router()
         return result
 
     def _parse_report(
@@ -463,6 +642,29 @@ class IngestionPipeline:
                 raise RuntimeError(
                     f"{parser_result.parser} produced no usable elements: "
                     f"{details}"
+                )
+            if (
+                not parser_result_accepted(
+                    parser_result,
+                    self.settings,
+                )
+                and bool(
+                    getattr(
+                        self.settings,
+                        "parser_fallback_enabled",
+                        True,
+                    )
+                )
+            ):
+                details = "; ".join(
+                    [
+                        *parser_result.quality.reasons,
+                        *parser_result.errors,
+                    ]
+                ) or "quality policy rejected the parser result"
+                raise RuntimeError(
+                    f"{parser_result.parser} produced retryable degraded "
+                    f"output: {details}"
                 )
             work.parser_result = parser_result
             work.elements = parser_result.elements
@@ -692,8 +894,6 @@ class IngestionPipeline:
         vectorstore,
         tracing: bool,
     ) -> tuple[ReportIngestStats, _ReportWork]:
-        from rag_app import _add_documents_with_retry, build_doc_id
-
         t0 = time.perf_counter()
         ids = [
             build_doc_id(
@@ -714,12 +914,17 @@ class IngestionPipeline:
                     vectorstore,
                     work.source_file,
                 )
-                _add_documents_with_retry(
-                    vectorstore=vectorstore,
-                    docs=work.documents,
-                    ids=ids,
-                    batch_size=self.settings.upsert_batch_size,
-                )
+                try:
+                    add_documents_with_retry(
+                        vectorstore=vectorstore,
+                        docs=work.documents,
+                        ids=ids,
+                        batch_size=self.settings.upsert_batch_size,
+                    )
+                except Exception:
+                    new_ids = set(ids).difference(existing_ids)
+                    _delete_document_ids(vectorstore, new_ids)
+                    raise
                 stale_ids = existing_ids.difference(ids)
                 if stale_ids:
                     _delete_document_ids(vectorstore, stale_ids)
@@ -816,13 +1021,17 @@ class IngestionPipeline:
     @staticmethod
     def _print_report_stats(stats: ReportIngestStats) -> None:
         tqdm.write(
-            f"  {stats.filename}: {stats.elements} elements -> "
+            f"  {stats.filename}: {stats.pages} pages, "
+            f"{stats.elements} elements -> "
             f"{stats.indexed_chunks} chunks "
             f"(parse={stats.parse_ms / 1000:.1f}s, "
             f"enrich={stats.enrich_ms / 1000:.1f}s, "
             f"embed={stats.embed_ms / 1000:.1f}s, "
             f"bedrock={stats.bedrock_calls}, "
-            f"ocr={stats.effective_do_ocr})"
+            f"ocr={stats.effective_do_ocr}, "
+            f"parser={stats.selected_parser}, "
+            f"quality={stats.parser_quality_score:.3f}, "
+            f"fallback={stats.fallback_used})"
         )
 
     def ingest_pdf(
@@ -837,8 +1046,6 @@ class IngestionPipeline:
         tracing: bool = False,
         rebuild: bool = False,
     ) -> ReportIngestStats:
-        from rag_app import get_embedder, get_vectorstore
-
         source_file = source_file or pdf_path.name
         artifact_dir = (
             artifact_dir
@@ -863,8 +1070,12 @@ class IngestionPipeline:
                 tracing=tracing,
             )
             if vectorstore is None:
-                embedder = get_embedder(self.settings)
-                vectorstore = get_vectorstore(
+                if self.runtime is None:
+                    raise RuntimeError(
+                        "IngestionRuntime is required for vector ingestion."
+                    )
+                embedder = self.runtime.get_embedder(self.settings)
+                vectorstore = self.runtime.get_vectorstore(
                     self.settings,
                     embedder,
                 )

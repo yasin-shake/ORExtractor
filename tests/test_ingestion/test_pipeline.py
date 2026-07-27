@@ -2,8 +2,14 @@
 
 from pathlib import Path
 import threading
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
+import pytest
+from langchain_core.documents import Document
+
+import ingestion.indexing as indexing
+import ingestion.pipeline as pipeline_module
 from ingestion.chunking import elements_to_documents
 from ingestion.models import (
     ElementRecord,
@@ -15,8 +21,10 @@ from ingestion.pipeline import (
     IngestionPipeline,
     _ReportWork,
     _delete_document_ids,
+    _promote_rebuilt_collection,
     _source_document_ids,
 )
+from ingestion.runtime import IngestionRuntime
 
 
 class _Settings:
@@ -79,6 +87,26 @@ def test_elements_to_documents_pipeline_boundary():
     assert docs
     assert all("source" in d.metadata for d in docs)
     assert all("ni_item" in d.metadata for d in docs)
+
+
+def test_text_first_run_uses_fast_tables_without_mutating_base_settings():
+    settings = _Settings()
+    settings.docling_table_mode = "accurate"
+    settings.docling_text_first_table_mode = "fast"
+    settings.docling_generate_page_images = True
+    settings.docling_generate_picture_images = True
+
+    pipeline = IngestionPipeline(
+        settings,
+        enable_visuals=False,
+        partition_only=False,
+    )
+
+    assert pipeline.settings.docling_table_mode == "fast"
+    assert pipeline.settings.docling_generate_page_images is False
+    assert pipeline.settings.docling_generate_picture_images is False
+    assert settings.docling_table_mode == "accurate"
+    assert settings.docling_generate_page_images is True
 
 
 def test_inspect_elements_uses_parser_router(tmp_path):
@@ -169,6 +197,319 @@ def test_stale_source_ids_are_discoverable_and_deletable():
     vectorstore._collection.delete.assert_called_once_with(ids=["old-1"])
 
 
+def test_failed_multi_batch_index_removes_new_ids(monkeypatch, tmp_path):
+    class RetryableError(Exception):
+        pass
+
+    monkeypatch.setattr(indexing, "APIConnectionError", RetryableError)
+    monkeypatch.setattr(indexing, "RateLimitError", RetryableError)
+    monkeypatch.setattr(indexing, "APIError", RetryableError)
+    monkeypatch.setattr(indexing.time, "sleep", lambda _: None)
+
+    class Collection:
+        def __init__(self):
+            self.ids = set()
+
+        def get(self, **kwargs):
+            return {"ids": []}
+
+        def delete(self, ids):
+            self.ids.difference_update(ids)
+
+    class Store:
+        def __init__(self):
+            self._collection = Collection()
+            self.calls = 0
+
+        def add_documents(self, *, documents, ids):
+            self.calls += 1
+            if self.calls == 1:
+                self._collection.ids.update(ids)
+                return
+            raise RetryableError("simulated second-batch failure")
+
+    settings = _Settings()
+    settings.upsert_batch_size = 2
+    pipeline = IngestionPipeline(settings, enable_visuals=False)
+    store = Store()
+    work = _ReportWork(
+        pdf_path=tmp_path / "r.pdf",
+        source_file="r.pdf",
+        artifact_dir=tmp_path / "artifacts",
+        documents=[
+            Document(
+                page_content=f"chunk-{index}",
+                metadata={"source": "r.pdf", "page": 1, "chunk": index},
+            )
+            for index in range(3)
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="failed for chunks"):
+        pipeline._index_report(work, vectorstore=store, tracing=False)
+
+    assert store._collection.ids == set()
+
+
+def test_failed_rebuild_leaves_active_collection_untouched(monkeypatch, tmp_path):
+    settings = _Settings()
+    settings.knowledge_dir = tmp_path / "knowledge"
+    settings.knowledge_dir.mkdir()
+    settings.chroma_dir = tmp_path / "chroma"
+    (settings.knowledge_dir / "r.pdf").write_bytes(b"%PDF-1.4\n")
+
+    class Collection:
+        def __init__(self, name):
+            self.name = name
+
+        def count(self):
+            return 0
+
+        @property
+        def metadata(self):
+            return {}
+
+        def modify(self, *, name=None, metadata=None):
+            if name:
+                self.name = name
+
+    class Client:
+        def __init__(self):
+            self.deleted = []
+
+        def delete_collection(self, name):
+            self.deleted.append(name)
+
+    client = Client()
+    monkeypatch.setattr(
+        pipeline_module.chromadb,
+        "PersistentClient",
+        lambda **kwargs: client,
+    )
+    runtime = IngestionRuntime(
+        get_embedder=lambda settings: object(),
+        get_vectorstore=lambda settings, embedder: SimpleNamespace(
+            _collection=Collection(settings.collection_name)
+        ),
+    )
+    pipeline = IngestionPipeline(
+        settings,
+        enable_visuals=False,
+        runtime=runtime,
+    )
+    pipeline.parser_router = MagicMock()
+    pipeline.parser_router.parse.side_effect = RuntimeError("parse failed")
+
+    result = pipeline.ingest_all(rebuild=True)
+
+    assert result.status == "failed"
+    assert settings.collection_name not in client.deleted
+
+
+def test_empty_rebuild_clears_active_collection(monkeypatch, tmp_path):
+    settings = _Settings()
+    settings.knowledge_dir = tmp_path / "knowledge"
+    settings.knowledge_dir.mkdir()
+    settings.chroma_dir = tmp_path / "chroma"
+    client = MagicMock()
+    monkeypatch.setattr(
+        pipeline_module.chromadb,
+        "PersistentClient",
+        lambda **kwargs: client,
+    )
+    runtime = IngestionRuntime(
+        get_embedder=lambda settings: object(),
+        get_vectorstore=lambda settings, embedder: object(),
+    )
+    pipeline = IngestionPipeline(
+        settings,
+        enable_visuals=False,
+        runtime=runtime,
+    )
+
+    result = pipeline.ingest_all(rebuild=True)
+
+    assert result.status == "completed"
+    client.delete_collection.assert_called_once_with(
+        name=settings.collection_name
+    )
+
+
+def test_rebuild_promotion_replaces_active_collection():
+    class Collection:
+        def __init__(self, client, name, *, fail_rename=False):
+            self.client = client
+            self.name = name
+            self.fail_rename = fail_rename
+
+        def modify(self, *, name=None, metadata=None):
+            if name is None:
+                return
+            if self.fail_rename:
+                raise RuntimeError("rename failed")
+            self.client.collections.pop(self.name, None)
+            self.name = name
+            self.client.collections[name] = self
+
+    class Client:
+        def __init__(self):
+            self.collections = {}
+            self.deleted = []
+
+        def get_collection(self, name):
+            return self.collections[name]
+
+        def delete_collection(self, name):
+            self.deleted.append(name)
+            self.collections.pop(name)
+
+    client = Client()
+    active = Collection(client, "reports")
+    rebuilt = Collection(client, "reports__rebuild")
+    client.collections = {
+        active.name: active,
+        rebuilt.name: rebuilt,
+    }
+
+    _promote_rebuilt_collection(
+        client,
+        rebuilt,
+        active_name="reports",
+    )
+
+    assert client.collections["reports"] is rebuilt
+    assert active.name.startswith("reports__backup_")
+    assert active.name in client.deleted
+
+
+def test_rebuild_promotion_restores_active_name_when_swap_fails():
+    class Collection:
+        def __init__(self, name, *, fail_rename=False):
+            self.name = name
+            self.fail_rename = fail_rename
+
+        def modify(self, *, name=None, metadata=None):
+            if self.fail_rename:
+                raise RuntimeError("rename failed")
+            if name:
+                self.name = name
+
+    active = Collection("reports")
+    rebuilt = Collection("reports__rebuild", fail_rename=True)
+    client = SimpleNamespace(
+        get_collection=lambda name: active,
+        delete_collection=lambda name: None,
+    )
+
+    with pytest.raises(RuntimeError, match="rename failed"):
+        _promote_rebuilt_collection(
+            client,
+            rebuilt,
+            active_name="reports",
+        )
+
+    assert active.name == "reports"
+
+
+def test_rebuild_promotion_switches_real_chroma_collection(tmp_path):
+    client = pipeline_module.chromadb.PersistentClient(
+        path=str(tmp_path / "chroma")
+    )
+    active = client.get_or_create_collection("reports")
+    active.add(
+        ids=["old"],
+        embeddings=[[1.0, 0.0]],
+        documents=["old document"],
+    )
+    rebuilt = client.get_or_create_collection("reports__rebuild")
+    rebuilt.add(
+        ids=["new"],
+        embeddings=[[0.0, 1.0]],
+        documents=["new document"],
+    )
+
+    _promote_rebuilt_collection(
+        client,
+        rebuilt,
+        active_name="reports",
+    )
+
+    promoted = client.get_collection("reports")
+    assert promoted.get(include=[])["ids"] == ["new"]
+    assert sorted(collection.name for collection in client.list_collections()) == [
+        "reports"
+    ]
+
+
+def test_successful_rebuild_promotes_only_after_pipeline_validation(tmp_path):
+    settings = _Settings()
+    settings.knowledge_dir = tmp_path / "knowledge"
+    settings.knowledge_dir.mkdir()
+    settings.chroma_dir = tmp_path / "chroma"
+    settings.artifact_dir = tmp_path / "artifacts"
+    settings.resolved_embedding_signature = {"provider": "test"}
+    pdf = settings.knowledge_dir / "report.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    client = pipeline_module.chromadb.PersistentClient(
+        path=str(settings.chroma_dir)
+    )
+    old = client.get_or_create_collection(settings.collection_name)
+    old.add(
+        ids=["old"],
+        embeddings=[[1.0, 0.0]],
+        documents=["stale"],
+    )
+
+    runtime = IngestionRuntime(
+        get_embedder=lambda _settings: object(),
+        get_vectorstore=lambda vector_settings, _embedder: SimpleNamespace(
+            _collection=client.get_or_create_collection(
+                vector_settings.collection_name
+            )
+        ),
+    )
+    pipeline = IngestionPipeline(
+        settings,
+        enable_visuals=False,
+        runtime=runtime,
+    )
+    parser_result = ParserResult(
+        source_file="report.pdf",
+        parser="docling",
+        parser_version="test",
+        elements=[
+            ElementRecord(
+                element_id="n1",
+                source_file="report.pdf",
+                category="NarrativeText",
+                text="Body",
+            )
+        ],
+        quality=ParserQualityReport(score=1.0),
+    )
+
+    def fake_ingest_pdf(path, *, source_file, artifact_dir, **kwargs):
+        pipeline._last_report_work = _ReportWork(
+            pdf_path=path,
+            source_file=source_file,
+            artifact_dir=artifact_dir,
+            parser_result=parser_result,
+        )
+        return ReportIngestStats(filename=source_file)
+
+    pipeline.ingest_pdf = fake_ingest_pdf
+
+    result = pipeline.ingest_all(rebuild=True)
+
+    assert result.status == "completed"
+    assert result.files == ["report.pdf"]
+    assert client.get_collection(settings.collection_name).count() == 0
+    assert sorted(collection.name for collection in client.list_collections()) == [
+        settings.collection_name
+    ]
+
+
 def test_ingest_all_discovers_nested_pdfs_with_relative_source_ids(tmp_path):
     settings = _Settings()
     settings.knowledge_dir = tmp_path / "knowledge"
@@ -224,7 +565,14 @@ def test_bounded_pipeline_uses_separate_enrich_and_index_workers(tmp_path):
             b"%PDF staged"
         )
 
-    pipeline = IngestionPipeline(settings, enable_visuals=False)
+    pipeline = IngestionPipeline(
+        settings,
+        enable_visuals=False,
+        runtime=IngestionRuntime(
+            get_embedder=lambda _settings: MagicMock(),
+            get_vectorstore=lambda _settings, _embedder: MagicMock(),
+        ),
+    )
     stage_threads = {"parse": [], "enrich": [], "index": []}
 
     def fake_parse(path, *, source_file, artifact_dir, tracing):
@@ -273,11 +621,7 @@ def test_bounded_pipeline_uses_separate_enrich_and_index_workers(tmp_path):
     pipeline._prepare_report = fake_prepare
     pipeline._index_after_prepare = fake_index
 
-    with (
-        patch("rag_app.get_embedder", return_value=MagicMock()),
-        patch("rag_app.get_vectorstore", return_value=MagicMock()),
-    ):
-        result = pipeline.ingest_all()
+    result = pipeline.ingest_all()
 
     assert result.files == ["r0.pdf", "r1.pdf", "r2.pdf"]
     assert all(name == "MainThread" for name in stage_threads["parse"])

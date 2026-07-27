@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from ingestion.models import ElementRecord, ParserQualityReport, ParserResult
 from ingestion.parsers.router import ParserRouter
+from ingestion.parsers.router import get_parser_router
 
 
 class _Settings:
@@ -104,6 +107,40 @@ def test_router_retains_degraded_primary_when_fallback_fails(tmp_path):
     assert result.fallback.attempted is True
     assert result.fallback.used is False
     assert "worker unavailable" in result.errors
+
+
+def test_failed_primary_exposes_fallback_failure(tmp_path):
+    class _Failing(_Parser):
+        def parse(
+            self,
+            pdf_path: Path,
+            *,
+            source_file: str | None = None,
+            artifact_dir: Path | None = None,
+        ) -> ParserResult:
+            raise RuntimeError(f"{self.parser_name} unavailable")
+
+    settings = _Settings()
+    settings.artifact_dir = tmp_path
+    result = ParserRouter(
+        settings,
+        primary=_Failing("docling", 0.0, []),
+        fallback=_Failing("mineru", 0.0, []),
+    ).parse(tmp_path / "report.pdf")
+
+    assert result.status == "failed"
+    assert any("docling unavailable" in error for error in result.errors)
+    assert any("mineru unavailable" in error for error in result.errors)
+
+
+def test_production_router_fails_fast_when_mineru_service_is_unconfigured():
+    settings = _Settings()
+    settings.mineru_execution_mode = "service"
+    settings.mineru_api_url = None
+    settings.parser_require_fallback_ready = True
+
+    with pytest.raises(RuntimeError, match="MINERU_API_URL"):
+        get_parser_router(settings)
 
 
 def test_router_preserves_nested_source_and_artifact_path(tmp_path):

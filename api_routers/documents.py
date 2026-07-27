@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException
 
-from api_routers._deps import run_ingest, safe_pdf_name, settings_or_503
+from api_routers._deps import (
+    IngestBusyError,
+    IngestionFailedError,
+    delete_document_and_rebuild,
+    safe_pdf_name,
+    settings_or_503,
+)
 from rag_app import iter_pdf_paths, pdf_source_id
 
 router = APIRouter(tags=["documents"])
@@ -34,8 +42,6 @@ def list_documents():
 @router.delete("/api/documents/{filename:path}", summary="Delete a document and rebuild index")
 def delete_document(filename: str):
     """Remove a PDF from the knowledge directory and rebuild the vector index."""
-    from api_routers._deps import IngestBusyError
-
     settings = settings_or_503()
     normalized = filename.replace("\\", "/")
     relative = Path(normalized)
@@ -45,9 +51,15 @@ def delete_document(filename: str):
     path = settings.knowledge_dir / relative.parent / safe_name
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Document not found: {filename!r}")
-    path.unlink()
     try:
-        run_ingest(rebuild=True)
+        delete_document_and_rebuild(relative.parent / safe_name)
     except IngestBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IngestionFailedError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document not found: {filename!r}",
+        ) from exc
     return {"status": "deleted", "file": normalized}

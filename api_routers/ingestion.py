@@ -9,11 +9,14 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from api_routers._deps import (
     IngestBusyError,
+    IngestionFailedError,
+    _remove_upload_staging_dir,
+    create_upload_staging_dir,
     run_ingest,
-    run_ingest_and_archive,
+    run_staged_ingest,
+    run_staged_ingest_and_archive,
     safe_pdf_name,
     save_upload,
-    settings_or_503,
     zip_response,
 )
 
@@ -45,27 +48,28 @@ async def upload_and_ingest(
     Upload one or more PDF files, save them to the knowledge directory,
     and upsert their chunks into the vector store.
     """
-    settings = settings_or_503()
     if parser not in {None, "docling", "mineru"}:
         raise HTTPException(status_code=422, detail="Unsupported parser")
-    settings.knowledge_dir.mkdir(parents=True, exist_ok=True)
+    staging_dir = create_upload_staging_dir()
     saved: List[str] = []
-    for upload in files:
-        name = safe_pdf_name(upload.filename)
-        destination = settings.knowledge_dir / name
-        await save_upload(upload, destination)
-        saved.append(name)
-
     try:
+        for upload in files:
+            name = safe_pdf_name(upload.filename)
+            await save_upload(upload, staging_dir / name)
+            saved.append(name)
         result = await anyio.to_thread.run_sync(
-            lambda: run_ingest(
-                rebuild=False,
+            lambda: run_staged_ingest(
+                staging_dir,
+                saved,
                 parser=parser,
                 fallback_enabled=fallback_enabled,
             )
         )
     except IngestBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    finally:
+        if staging_dir.exists():
+            _remove_upload_staging_dir(staging_dir)
     return _ingest_payload(saved, result, status="ingested")
 
 
@@ -101,21 +105,26 @@ async def ingest_and_export(
     files: List[UploadFile] = File(...),
     rebuild: bool = Form(False),
 ):
-    settings = settings_or_503()
-    settings.knowledge_dir.mkdir(parents=True, exist_ok=True)
-
+    staging_dir = create_upload_staging_dir()
     saved: List[str] = []
-    for upload in files:
-        name = safe_pdf_name(upload.filename)
-        destination = settings.knowledge_dir / name
-        await save_upload(upload, destination)
-        saved.append(name)
-
     try:
+        for upload in files:
+            name = safe_pdf_name(upload.filename)
+            await save_upload(upload, staging_dir / name)
+            saved.append(name)
         archive_path = await anyio.to_thread.run_sync(
-            run_ingest_and_archive, rebuild, saved
+            lambda: run_staged_ingest_and_archive(
+                staging_dir,
+                saved,
+                rebuild=rebuild,
+            )
         )
     except IngestBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IngestionFailedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        if staging_dir.exists():
+            _remove_upload_staging_dir(staging_dir)
 
     return zip_response(archive_path, ingested_count=len(saved))
