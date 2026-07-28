@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from ingestion.models import (
     ChartSpecification,
     DiagramEdge,
@@ -5,6 +8,7 @@ from ingestion.models import (
     DiagramSpecification,
     ElementRecord,
     VisualAnalysis,
+    TableValidation,
 )
 from ingestion.visuals import (
     reconstruct_visuals,
@@ -18,6 +22,15 @@ class _Settings:
     bedrock_visual_confidence_threshold = 0.85
     visual_reconstruct_charts = True
     visual_reconstruct_diagrams = True
+
+
+def test_visual_confidence_and_figure_taxonomy_are_constrained():
+    with pytest.raises(ValidationError):
+        VisualAnalysis(confidence=100)
+    with pytest.raises(ValidationError):
+        TableValidation(confidence=-0.1)
+    with pytest.raises(ValidationError):
+        VisualAnalysis(figure_type="mine_plan_diagram")
 
 
 def test_visual_schema_accepts_valid_payload():
@@ -44,6 +57,30 @@ def test_unsupported_geological_map_rejected():
         confidence=0.99,
     )
     allowed, reason = reconstruction_allowed(analysis, _Settings())
+    assert allowed is False
+    assert reason == "unsupported_category"
+
+
+def test_geological_content_is_rejected_even_when_model_misclassifies_it():
+    analysis = VisualAnalysis(
+        figure_type="process_diagram",
+        caption="Geological Cross Section A-A'",
+        description="A fault cuts through a quartz vein.",
+        reconstruction_supported=True,
+        reconstruction_method="graphviz",
+        confidence=0.99,
+        diagram=DiagramSpecification(
+            diagram_type="process",
+            nodes=[
+                DiagramNode(id="fault", label="Fault"),
+                DiagramNode(id="vein", label="Quartz vein"),
+            ],
+            edges=[DiagramEdge(source="fault", target="vein")],
+        ),
+    )
+
+    allowed, reason = reconstruction_allowed(analysis, _Settings())
+
     assert allowed is False
     assert reason == "unsupported_category"
 
@@ -148,3 +185,34 @@ def test_dangling_diagram_is_not_reconstructed(tmp_path):
     )
     assert results["d1"]["reconstruction_allowed"] is False
     assert results["d1"]["reason"] == "diagram_validation_failed"
+
+
+def test_reconstruction_manifest_records_actual_visual_provider_and_model(
+    tmp_path,
+):
+    class LocalSettings(_Settings):
+        visual_model_provider = "ollama"
+        ollama_visual_model = "qwen3-vl:8b-instruct-q8_0"
+        bedrock_visual_model_id = "bedrock-model-must-not-be-recorded"
+
+    element = ElementRecord(
+        element_id="f1",
+        source_file="r.pdf",
+        category="Image",
+    )
+    analysis = VisualAnalysis(
+        figure_type="mine_plan",
+        description="General mine layout.",
+        reconstruction_supported=False,
+        confidence=0.99,
+    )
+
+    results, _ = reconstruct_visuals(
+        [element],
+        {"f1": analysis},
+        LocalSettings(),
+        tmp_path,
+    )
+
+    assert results["f1"]["visual_model_provider"] == "ollama"
+    assert results["f1"]["visual_model_id"] == "qwen3-vl:8b-instruct-q8_0"

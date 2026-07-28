@@ -5,7 +5,7 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -68,7 +68,7 @@ _STOPWORDS = frozenset(
 
 @dataclass
 class Settings:
-    openai_api_key: str
+    openai_api_key: str = field(repr=False)
     openai_base_url: Optional[str]
     embed_model: str
     aws_region: str
@@ -116,7 +116,7 @@ class Settings:
     parser_require_fallback_ready: bool = True
     docling_execution_mode: str = "local"
     docling_serve_url: Optional[str] = None
-    docling_serve_api_key: str = ""
+    docling_serve_api_key: str = field(default="", repr=False)
     docling_do_ocr: bool = True
     docling_ocr_backend: str = "onnxruntime"
     docling_ocr_languages: str = "english"
@@ -155,15 +155,22 @@ class Settings:
     docling_model_artifact_revision: str = ""
     mineru_execution_mode: str = "service"
     mineru_api_url: Optional[str] = None
-    mineru_api_token: str = ""
+    mineru_api_token: str = field(default="", repr=False)
     mineru_command: str = "mineru"
     mineru_backend: str = "pipeline"
     mineru_timeout_seconds: int = 1800
     artifact_dir: Path = Path("ingestion_artifacts")
     ingest_work_dir: Path = Path(".ingestion_work")
+    visual_model_provider: str = "ollama"
     bedrock_visual_model_id: str = "us.anthropic.claude-3-5-haiku-20241022-v1:0"
     bedrock_visual_max_tokens: int = 3500
     bedrock_visual_concurrency: int = 8
+    visual_model_concurrency: int = 1
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_visual_model: str = "qwen3-vl:8b-instruct-q8_0"
+    ollama_visual_timeout_seconds: int = 300
+    ollama_visual_context_length: int = 8192
+    ollama_keep_alive: str = "5m"
     bedrock_visual_confidence_threshold: float = 0.85
     visual_min_width: int = 250
     visual_min_height: int = 150
@@ -382,12 +389,34 @@ def load_settings() -> Settings:
         ingest_work_dir=Path(
             os.getenv("RAG_INGEST_WORK_DIR", ".ingestion_work")
         ),
+        visual_model_provider=os.getenv(
+            "VISUAL_MODEL_PROVIDER", "ollama"
+        ).strip().lower(),
         bedrock_visual_model_id=os.getenv(
             "BEDROCK_VISUAL_MODEL_ID",
             "us.anthropic.claude-3-5-haiku-20241022-v1:0",
         ),
         bedrock_visual_max_tokens=int(os.getenv("BEDROCK_VISUAL_MAX_TOKENS", "3500")),
         bedrock_visual_concurrency=int(os.getenv("BEDROCK_VISUAL_CONCURRENCY", "8")),
+        visual_model_concurrency=int(
+            os.getenv(
+                "VISUAL_MODEL_CONCURRENCY",
+                os.getenv("BEDROCK_VISUAL_CONCURRENCY", "1"),
+            )
+        ),
+        ollama_base_url=os.getenv(
+            "OLLAMA_BASE_URL", "http://127.0.0.1:11434"
+        ).strip().rstrip("/"),
+        ollama_visual_model=os.getenv(
+            "OLLAMA_VISUAL_MODEL", "qwen3-vl:8b-instruct-q8_0"
+        ).strip(),
+        ollama_visual_timeout_seconds=int(
+            os.getenv("OLLAMA_VISUAL_TIMEOUT_SECONDS", "300")
+        ),
+        ollama_visual_context_length=int(
+            os.getenv("OLLAMA_VISUAL_CONTEXT_LENGTH", "8192")
+        ),
+        ollama_keep_alive=os.getenv("OLLAMA_KEEP_ALIVE", "5m").strip(),
         bedrock_visual_confidence_threshold=float(
             os.getenv("BEDROCK_VISUAL_CONFIDENCE_THRESHOLD", "0.85")
         ),
@@ -1204,11 +1233,58 @@ def save_extraction(settings: Settings, report) -> Path:
     return out_path
 
 
+def run_visual_benchmark_cli(
+    settings: Settings,
+    *,
+    output_dir: Path,
+    real_samples: int,
+    provider: str | None = None,
+    model_name: str | None = None,
+) -> tuple[Path, Path]:
+    """Run the read-only visual benchmark without opening Chroma."""
+
+    from ingestion.visual_benchmark import (
+        build_synthetic_visual_cases,
+        run_visual_benchmark,
+        sample_real_visual_cases,
+        write_visual_benchmark_report,
+    )
+    from ingestion.visual_model import create_visual_model
+
+    if provider:
+        settings.visual_model_provider = provider
+    if model_name:
+        if settings.visual_model_provider == "ollama":
+            settings.ollama_visual_model = model_name
+        else:
+            settings.bedrock_visual_model_id = model_name
+    visual_model = create_visual_model(settings)
+    synthetic_dir = output_dir / "synthetic_images"
+    cases = build_synthetic_visual_cases(synthetic_dir)
+    cases.extend(
+        sample_real_visual_cases(
+            settings.artifact_dir,
+            settings,
+            limit=max(0, real_samples),
+        )
+    )
+    report = run_visual_benchmark(cases, visual_model)
+    json_path, markdown_path = write_visual_benchmark_report(report, output_dir)
+    print(
+        f"Visual benchmark complete: {report.summary.successful_cases}/"
+        f"{report.summary.total_cases} schema-valid; "
+        f"{report.summary.passed_cases}/{report.summary.gold_cases} gold cases passed."
+    )
+    print(f"JSON: {json_path}")
+    print(f"Report: {markdown_path}")
+    return json_path, markdown_path
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "NI 43-101 RAG with Docling primary parsing, MinerU fallback, "
-            "LangChain, Claude Haiku, LangSmith, and Chroma."
+            "configurable visual enrichment, LangSmith, and Chroma."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1250,7 +1326,7 @@ def parse_args() -> argparse.Namespace:
     ingest_parser.add_argument(
         "--no-visual-enrichment",
         action="store_true",
-        help="Skip Bedrock/Claude Haiku visual enrichment.",
+        help="Skip visual-model enrichment.",
     )
     ingest_parser.add_argument(
         "--partition-only",
@@ -1280,6 +1356,33 @@ def parse_args() -> argparse.Namespace:
         "--file",
         required=True,
         help="PDF filename (in knowledge dirs) or path.",
+    )
+    visual_benchmark_parser = subparsers.add_parser(
+        "benchmark-visuals",
+        help="Benchmark a visual model without writing to Chroma.",
+    )
+    visual_benchmark_parser.add_argument(
+        "--provider",
+        choices=["ollama", "bedrock"],
+        default=None,
+        help="Override VISUAL_MODEL_PROVIDER for this benchmark.",
+    )
+    visual_benchmark_parser.add_argument(
+        "--model",
+        default=None,
+        help="Override the configured visual model name or model ID.",
+    )
+    visual_benchmark_parser.add_argument(
+        "--real-samples",
+        type=int,
+        default=20,
+        help="Number of retained real-report artifacts to sample in addition to gold cases.",
+    )
+    visual_benchmark_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("benchmark_results") / "visual",
+        help="Directory for benchmark images and JSON/Markdown results.",
     )
 
     subparsers.add_parser("chat", help="Start interactive CLI chat.")
@@ -1340,6 +1443,14 @@ def main() -> int:
         elif args.command == "compare-parsers":
             info = compare_parsers(settings, args.file)
             print(json.dumps(info, indent=2))
+        elif args.command == "benchmark-visuals":
+            run_visual_benchmark_cli(
+                settings,
+                output_dir=args.output_dir,
+                real_samples=args.real_samples,
+                provider=args.provider,
+                model_name=args.model,
+            )
         else:
             embedder = get_embedder(settings)
             vectorstore = get_vectorstore(settings, embedder)

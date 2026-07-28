@@ -1,11 +1,10 @@
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 from ingestion.cache import EnrichmentCache
 from ingestion.enrichment import _image_payload, enrich_elements, should_enrich_figure
 from ingestion.models import ElementRecord, VisualAnalysis
+from ingestion.visual_model import VisualResponse
 
 
 @dataclass
@@ -78,36 +77,39 @@ def test_reprocess_visuals_bypasses_successful_cache(tmp_path):
         description="Source figure",
         confidence=0.95,
     )
-    raw = SimpleNamespace(
-        usage_metadata={"input_tokens": 20, "output_tokens": 10},
-        response_metadata={},
-    )
-    model = MagicMock()
-    model.invoke.return_value = {
-        "parsed": parsed,
-        "raw": raw,
-        "parsing_error": None,
-    }
+    class LocalVisualModel:
+        provider = "ollama"
+        model_id = "qwen3-vl:test"
+        cache_id = "ollama:qwen3-vl:test"
+
+        def analyze(self, _request):
+            return VisualResponse(
+                value=parsed,
+                input_tokens=20,
+                output_tokens=10,
+            )
+
+    model = LocalVisualModel()
     cache = EnrichmentCache(tmp_path / "cache")
 
-    with patch(
-        "ingestion.enrichment.get_visual_analysis_model",
-        return_value=model,
-    ):
-        _, _, _, first = enrich_elements([element], _Settings(), cache=cache)
-        _, _, _, second = enrich_elements([element], _Settings(), cache=cache)
-        _, _, _, forced = enrich_elements(
-            [element],
-            _Settings(),
-            cache=cache,
-            bypass_cache=True,
-        )
+    _, _, _, first = enrich_elements(
+        [element], _Settings(), cache=cache, visual_model=model
+    )
+    _, _, _, second = enrich_elements(
+        [element], _Settings(), cache=cache, visual_model=model
+    )
+    _, _, _, forced = enrich_elements(
+        [element],
+        _Settings(),
+        cache=cache,
+        bypass_cache=True,
+        visual_model=model,
+    )
 
-    assert first["bedrock_calls"] == 1
+    assert first["visual_model_calls"] == 1
     assert first["input_tokens"] == 20
     assert second["cache_hits"] == 1
-    assert forced["bedrock_calls"] == 1
-    assert model.invoke.call_count == 2
+    assert forced["visual_model_calls"] == 1
 
 
 def test_per_report_call_limit_skips_extra_visuals(tmp_path):
@@ -124,11 +126,21 @@ def test_per_report_call_limit_skips_extra_visuals(tmp_path):
         image_width=400,
         image_height=300,
     )
-    with patch("ingestion.enrichment.get_visual_analysis_model") as factory:
-        _, _, _, stats = enrich_elements([element], settings)
+    class NeverInvokedModel:
+        provider = "ollama"
+        model_id = "never"
+        cache_id = "ollama:never"
+
+        def analyze(self, _request):
+            raise AssertionError("budget-skipped visual must not invoke a model")
+
+    _, _, _, stats = enrich_elements(
+        [element],
+        settings,
+        visual_model=NeverInvokedModel(),
+    )
     assert stats["budget_skips"] == 1
     assert element.skip_reason == "visual_budget_limit"
-    factory.assert_not_called()
 
 
 def test_bedrock_image_payload_is_downscaled_without_touching_source(tmp_path):
@@ -147,3 +159,80 @@ def test_bedrock_image_payload_is_downscaled_without_touching_source(tmp_path):
         assert payload.height <= 100
     assert media_type == "image/png"
     assert image_path.stat().st_size == original_size
+
+
+def test_local_visual_model_enriches_through_the_provider_seam(tmp_path):
+    from PIL import Image
+
+    image_path = tmp_path / "figure.png"
+    Image.new("RGB", (400, 300), "white").save(image_path)
+    element = ElementRecord(
+        element_id="f1",
+        source_file="r.pdf",
+        category="Image",
+        image_path=str(image_path),
+        image_width=400,
+        image_height=300,
+    )
+
+    class LocalVisualModel:
+        provider = "ollama"
+        model_id = "qwen3-vl:test"
+        cache_id = "ollama:qwen3-vl:test"
+
+        def analyze(self, _request):
+            return VisualResponse(
+                value=VisualAnalysis(
+                    figure_type="photo",
+                    description="A local-model description.",
+                    confidence=0.91,
+                ),
+                input_tokens=31,
+                output_tokens=17,
+                latency_ms=12.5,
+            )
+
+    analyses, _, errors, stats = enrich_elements(
+        [element],
+        _Settings(),
+        visual_model=LocalVisualModel(),
+    )
+
+    assert errors == []
+    assert analyses["f1"].description == "A local-model description."
+    assert stats["visual_model_calls"] == 1
+    assert stats["bedrock_calls"] == 0
+    assert stats["input_tokens"] == 31
+    assert stats["output_tokens"] == 17
+
+
+def test_large_table_prompt_forbids_partial_normalized_markdown():
+    element = ElementRecord(
+        element_id="t1",
+        source_file="r.pdf",
+        category="Table",
+        text="Mineral resource table",
+        text_as_html="<table>" + ("<tr><td>1.20</td></tr>" * 225) + "</table>",
+    )
+
+    class NeverInvokedModel:
+        provider = "ollama"
+        model_id = "qwen3-vl:test"
+        cache_id = "ollama:qwen3-vl:test"
+
+        def analyze(self, _request):
+            raise AssertionError(
+                "text-only truncated tables must not invoke a model"
+            )
+
+    _, validations, errors, stats = enrich_elements(
+        [element],
+        _Settings(),
+        visual_model=NeverInvokedModel(),
+    )
+
+    assert errors == []
+    assert validations["t1"].issues == ["input_truncated"]
+    assert validations["t1"].normalized_markdown == ""
+    assert "original parser output" in validations["t1"].description
+    assert stats["visual_model_calls"] == 0

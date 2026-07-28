@@ -10,6 +10,10 @@ from routing_guide import get_item_title
 from ingestion.models import DocumentContext, ElementRecord
 
 _CAPTION_RE = re.compile(r"(?i)^\s*(figure|fig\.?|table|tbl\.?)\s*[\d\.\-]+")
+_FIGURE_REFERENCE_RE = re.compile(
+    r"(?i)\b(?:figure|fig\.?)\s*(\d{1,3})\s*[-.\s]\s*(\d{1,3})\b"
+)
+_REFERENCE_CATEGORIES = frozenset({"NarrativeText", "ListItem", "Title"})
 
 
 def _is_title(el: ElementRecord) -> bool:
@@ -22,6 +26,13 @@ def _is_caption(el: ElementRecord) -> bool:
     if el.category in {"NarrativeText", "Title"} and _CAPTION_RE.match(el.text or ""):
         return True
     return False
+
+
+def _figure_reference_keys(text: str) -> set[tuple[int, int]]:
+    return {
+        (int(match.group(1)), int(match.group(2)))
+        for match in _FIGURE_REFERENCE_RE.finditer(text or "")
+    }
 
 
 def annotate_hierarchy(elements: List[ElementRecord]) -> List[ElementRecord]:
@@ -90,6 +101,27 @@ def annotate_hierarchy(elements: List[ElementRecord]) -> List[ElementRecord]:
                 break
         el.following_text = "\n".join(following)[:800]
 
+        reference_keys = _figure_reference_keys(
+            f"{el.caption}\n{el.text}"
+        )
+        references: List[str] = []
+        if reference_keys:
+            for candidate in elements:
+                candidate_text = candidate.text.strip()
+                if (
+                    candidate.category not in _REFERENCE_CATEGORIES
+                    or not candidate_text
+                    or not (
+                        reference_keys
+                        & _figure_reference_keys(candidate_text)
+                    )
+                ):
+                    continue
+                references.append(candidate_text)
+                if len(references) >= 6:
+                    break
+        el.figure_references = references
+
     return elements
 
 
@@ -103,6 +135,7 @@ def build_visual_context(el: ElementRecord, task: Optional[str] = None) -> Docum
         caption=el.caption,
         preceding_text=el.preceding_text,
         following_text=el.following_text,
+        figure_references=list(el.figure_references),
         table_html=el.text_as_html or None,
         task=task or "Classify and analyse the attached visual.",
     )

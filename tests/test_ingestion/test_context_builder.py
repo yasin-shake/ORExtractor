@@ -55,6 +55,72 @@ def test_build_visual_context():
     assert ctx.caption == "Fig 1"
 
 
+def test_visual_context_includes_leading_and_trailing_explicit_references():
+    elements = [
+        _el(
+            element_id="leading-reference",
+            text=(
+                "As shown in Figure 16-27, the mine layout includes the "
+                "tailings storage facility and process plant."
+            ),
+            page_number=313,
+        ),
+        *[
+            _el(
+                element_id=f"before-{index}",
+                text=f"Unrelated preceding paragraph {index}.",
+                page_number=313,
+            )
+            for index in range(8)
+        ],
+        _el(
+            element_id="figure",
+            category="Image",
+            image_path="figure.png",
+            page_number=314,
+        ),
+        _el(
+            element_id="caption",
+            category="Caption",
+            text="Figure 16-27: General mine layout.",
+            page_number=314,
+        ),
+        *[
+            _el(
+                element_id=f"after-{index}",
+                text=f"Unrelated following paragraph {index}.",
+                page_number=315,
+            )
+            for index in range(8)
+        ],
+        _el(
+            element_id="trailing-reference",
+            text=(
+                "Figure 16 27 also identifies the ROM pad, camp, and north "
+                "and east waste dumps."
+            ),
+            page_number=315,
+        ),
+    ]
+
+    annotated = annotate_hierarchy(elements)
+    context = build_visual_context(
+        next(element for element in annotated if element.element_id == "figure")
+    )
+
+    assert context.caption == "Figure 16-27: General mine layout."
+    assert context.figure_references == [
+        (
+            "As shown in Figure 16-27, the mine layout includes the tailings "
+            "storage facility and process plant."
+        ),
+        (
+            "Figure 16 27 also identifies the ROM pad, camp, and north and "
+            "east waste dumps."
+        ),
+    ]
+
+
 def test_needs_table_validation_for_resource_tables():
     el = _el(
         category="Table",

@@ -1,4 +1,4 @@
-"""Selective Bedrock visual enrichment with routing, retries, and caching."""
+"""Selective visual enrichment with routing, retries, and caching."""
 
 from __future__ import annotations
 
@@ -10,10 +10,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from langchain_core.messages import HumanMessage
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
-from ingestion.bedrock import get_table_validation_model, get_visual_analysis_model
 from ingestion.cache import EnrichmentCache
 from ingestion.context import build_visual_context, needs_table_validation
 from ingestion.models import (
@@ -22,6 +20,57 @@ from ingestion.models import (
     TableValidation,
     VisualAnalysis,
 )
+from ingestion.visual_model import VisualRequest, create_visual_model
+
+
+FIGURE_ANALYSIS_INSTRUCTIONS = (
+    "You are analysing a figure from an NI 43-101 mineral project report.\n"
+    "Use the supplied caption, preceding_text, following_text, and "
+    "figure_references together to understand what the figure represents. "
+    "Treat that narrative as report context, not as permission to manufacture "
+    "visual labels, geometry, or chart points that are not visible.\n"
+    "Apply the prohibited-geometry safety rule before chart or process-diagram "
+    "rules. A geological cross-section with labeled features or arrows is "
+    "still a geological cross-section, never a process diagram.\n"
+    "Return a complete VisualAnalysis object and make an explicit decision for "
+    "every field. Never leave classification, quantitative-data, "
+    "reconstruction, method, confidence, or description fields at a schema "
+    "default merely because a nested chart or diagram was extracted.\n"
+    "Confidence is a calibrated decimal from 0.0 to 1.0, never a percentage.\n"
+    "Use figure_type=bar_chart, line_chart, scatter_chart, or pie_chart for "
+    "those chart types, and set chart.chart_type to bar, line, scatter, or pie. "
+    "Use figure_type=process_diagram for a readable process flow and set "
+    "diagram.diagram_type=process.\n"
+    "For a clearly readable chart, set contains_quantitative_data=true and "
+    "reconstruction_supported=true only when its data is sufficient for a "
+    "faithful Plotly reconstruction. For a readable process diagram, if all "
+    "labeled boxes and directed connections are visible and captured in "
+    "complete node and edge lists, set reconstruction_supported=true and "
+    "reconstruction_method=graphviz. Do not reject it merely because it is "
+    "non-quantitative.\n"
+    "Only extract chart or diagram data when values and relationships are "
+    "clearly readable. Use only numbers printed in the image: never infer "
+    "convenient axis bounds or series counts. Set unprinted x/y bounds to null. "
+    "For charts set diagram=null; for diagrams set chart=null. If values are "
+    "estimated, set values_are_estimated=true.\n"
+    "Never invent geological geometry. Geological maps, cross-sections, mine "
+    "plans, drill-hole maps, pit shells, contour maps, and 3D geological views "
+    "must use the exact schema taxonomy (for example mine_plan), have "
+    "reconstruction_supported=false and reconstruction_method=none, and set "
+    "both chart=null and diagram=null.\n"
+)
+
+TABLE_VALIDATION_INSTRUCTIONS = (
+    "Validate this table extracted from an NI 43-101 report. Return a complete "
+    "TableValidation object, explicitly setting validity, description, "
+    "issues, normalized_markdown, confidence, and warnings. Flag malformed "
+    "HTML, inconsistent columns, merged headers, and missing numeric content. "
+    "If reliable, provide normalized markdown. Confidence is a calibrated "
+    "decimal from 0.0 to 1.0, never a percentage. Do not invent numbers.\n"
+)
+
+_TABLE_CONTEXT_CHAR_LIMIT = 8000
+_TEXT_ONLY_TABLE_MODEL_CHAR_LIMIT = 4096
 
 
 def should_enrich_figure(el: ElementRecord, settings) -> Tuple[bool, str]:
@@ -50,6 +99,19 @@ def should_enrich_figure(el: ElementRecord, settings) -> Tuple[bool, str]:
     return True, ""
 
 
+def requires_deterministic_table_fallback(el: ElementRecord) -> bool:
+    """Whether the model cannot receive a complete table or a source image."""
+
+    table_source = el.text_as_html or el.text
+    has_image = bool(
+        el.image_path and Path(el.image_path).exists()
+    )
+    return (
+        len(table_source) > _TEXT_ONLY_TABLE_MODEL_CHAR_LIMIT
+        and not has_image
+    )
+
+
 def _image_payload(path: str, settings) -> Tuple[str, str]:
     """Return a bounded image payload without modifying the authoritative crop."""
     data = Path(path).read_bytes()
@@ -72,63 +134,56 @@ def _image_payload(path: str, settings) -> Tuple[str, str]:
     return base64.b64encode(data).decode("ascii"), "image/png"
 
 
-def _figure_message(el: ElementRecord, context_payload: dict, settings) -> HumanMessage:
+def _figure_message(el: ElementRecord, context_payload: dict, settings) -> VisualRequest:
     import json
 
     text = (
-        "You are analysing a figure from an NI 43-101 mineral project report.\n"
-        "Classify the figure, describe it using the surrounding context, and decide whether "
-        "deterministic reconstruction is supported.\n"
-        "Only extract chart/diagram data when values are clearly readable. "
-        "If values are estimated, set values_are_estimated=true.\n"
-        "Never invent geological geometry. Geological maps, cross-sections, mine plans, "
-        "drill-hole maps, pit shells, contour maps, and 3D geological views must have "
-        "reconstruction_supported=false.\n\n"
-        f"Context:\n{json.dumps(context_payload, ensure_ascii=True)}\n"
+        FIGURE_ANALYSIS_INSTRUCTIONS
+        + "\n"
+        + f"Context:\n{json.dumps(context_payload, ensure_ascii=True)}\n"
     )
     image_b64, media_type = _image_payload(el.image_path, settings)
-    return HumanMessage(
-        content=[
-            {"type": "text", "text": text},
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": image_b64,
-                },
-            },
-        ]
+    return VisualRequest(
+        task="figure",
+        prompt=text,
+        image_base64=image_b64,
+        media_type=media_type,
     )
 
 
-def _table_message(el: ElementRecord, context_payload: dict, settings) -> HumanMessage:
+def _table_message(el: ElementRecord, context_payload: dict, settings) -> VisualRequest:
     import json
 
-    text = (
-        "Validate this table extracted from an NI 43-101 report. "
-        "Flag malformed HTML, inconsistent columns, merged headers, and missing numeric content. "
-        "If reliable, provide normalized markdown. Do not invent numbers.\n\n"
-        f"Context:\n{json.dumps(context_payload, ensure_ascii=True)}\n\n"
-        f"Table HTML:\n{(el.text_as_html or el.text)[:8000]}"
+    table_source = el.text_as_html or el.text
+    truncated = len(table_source) > _TABLE_CONTEXT_CHAR_LIMIT
+    truncation_instruction = (
+        "\nThe supplied table HTML is truncated. You cannot safely normalize "
+        "the complete table. MUST leave normalized_markdown empty, add "
+        "input_truncated to issues, and describe only structural problems "
+        "visible in the supplied prefix.\n"
+        if truncated
+        else ""
     )
-    content: List[dict] = [{"type": "text", "text": text}]
+    text = (
+        TABLE_VALIDATION_INSTRUCTIONS
+        + truncation_instruction
+        + "\n"
+        + f"Context:\n{json.dumps(context_payload, ensure_ascii=True)}\n\n"
+        + f"Table HTML:\n{table_source[:_TABLE_CONTEXT_CHAR_LIMIT]}"
+    )
+    image_b64 = ""
+    media_type = "image/png"
     if el.image_path and Path(el.image_path).exists():
         image_b64, media_type = _image_payload(el.image_path, settings)
-        content.append(
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": image_b64,
-                },
-            }
-        )
-    return HumanMessage(content=content)
+    return VisualRequest(
+        task="table",
+        prompt=text,
+        image_base64=image_b64,
+        media_type=media_type,
+    )
 
 
-def _invoke(model, message: HumanMessage):
+def _invoke(model, request: VisualRequest):
     attempts = 0
     response = None
     for attempt in Retrying(
@@ -139,31 +194,12 @@ def _invoke(model, message: HumanMessage):
     ):
         with attempt:
             attempts += 1
-            response = model.invoke([message])
-    raw = None
-    parsed = response
-    if isinstance(response, dict) and "parsed" in response:
-        parsing_error = response.get("parsing_error")
-        if parsing_error:
-            if isinstance(parsing_error, BaseException):
-                raise parsing_error
-            raise RuntimeError(str(parsing_error))
-        parsed = response.get("parsed")
-        raw = response.get("raw")
-    usage = getattr(raw, "usage_metadata", None) or {}
-    response_metadata = getattr(raw, "response_metadata", None) or {}
-    if not usage and isinstance(response_metadata, dict):
-        usage = response_metadata.get("usage", {}) or response_metadata.get(
-            "usage_metadata", {}
-        )
-    return parsed, {
-        "input_tokens": int(
-            usage.get("input_tokens", usage.get("inputTokens", 0)) or 0
-        ),
-        "output_tokens": int(
-            usage.get("output_tokens", usage.get("outputTokens", 0)) or 0
-        ),
+            response = model.analyze(request)
+    return response.value, {
+        "input_tokens": response.input_tokens,
+        "output_tokens": response.output_tokens,
         "retry_count": max(0, attempts - 1),
+        "provider_latency_ms": response.latency_ms,
     }
 
 
@@ -173,6 +209,7 @@ def enrich_elements(
     cache: Optional[EnrichmentCache] = None,
     enable_visuals: bool = True,
     bypass_cache: bool = False,
+    visual_model=None,
 ) -> Tuple[Dict[str, VisualAnalysis], Dict[str, TableValidation], List[IngestionError], dict]:
     """Enrich selected figures/tables. Returns analyses, validations, errors, stats."""
     analyses: Dict[str, VisualAnalysis] = {}
@@ -180,6 +217,10 @@ def enrich_elements(
     errors: List[IngestionError] = []
     stats = {
         "bedrock_calls": 0,
+        "visual_model_calls": 0,
+        "visual_model_provider": str(
+            getattr(settings, "visual_model_provider", "bedrock")
+        ),
         "cache_hits": 0,
         "warnings": 0,
         "input_tokens": 0,
@@ -270,6 +311,16 @@ def enrich_elements(
             element.page_number,
         ),
     )
+    deterministic_table_jobs = [
+        element
+        for element in table_jobs
+        if requires_deterministic_table_fallback(element)
+    ]
+    table_jobs = [
+        element
+        for element in table_jobs
+        if not requires_deterministic_table_fallback(element)
+    ]
     figure_jobs = sorted(
         figure_jobs,
         key=figure_priority,
@@ -313,7 +364,9 @@ def enrich_elements(
         selected_by_kind[kind] += 1
         estimated_tokens += job_estimate
     figure_jobs = [el for kind, el in selected_jobs if kind == "figure"]
-    table_jobs = [el for kind, el in selected_jobs if kind == "table"]
+    table_jobs = [
+        el for kind, el in selected_jobs if kind == "table"
+    ] + deterministic_table_jobs
     for kind, el in deferred_jobs:
         if kind == "figure":
             el.skip_reason = "visual_budget_limit"
@@ -321,9 +374,25 @@ def enrich_elements(
     stats["estimated_token_budget_used"] = estimated_tokens
     stats["warnings"] += len(deferred_jobs)
 
-    model_id = settings.bedrock_visual_model_id
-    visual_model = get_visual_analysis_model(settings) if figure_jobs else None
-    table_model = get_table_validation_model(settings) if table_jobs else None
+    if selected_jobs and visual_model is None:
+        visual_model = create_visual_model(settings)
+    model_id = (
+        getattr(
+            visual_model,
+            "cache_id",
+            getattr(visual_model, "model_id", "unknown"),
+        )
+        if visual_model is not None
+        else "visual-model-not-invoked"
+    )
+    provider = str(
+        getattr(
+            visual_model,
+            "provider",
+            getattr(settings, "visual_model_provider", "bedrock"),
+        )
+    )
+    stats["visual_model_provider"] = provider
 
     def _analyse_figure(el: ElementRecord):
         ctx = build_visual_context(el)
@@ -355,6 +424,26 @@ def enrich_elements(
             )
 
     def _validate_table(el: ElementRecord):
+        if requires_deterministic_table_fallback(el):
+            return (
+                el.element_id,
+                TableValidation(
+                    is_valid=False,
+                    description=(
+                        "Table exceeds the safe text-only validation size and "
+                        "has no source image; original parser output was "
+                        "preserved without model normalization."
+                    ),
+                    issues=["input_truncated"],
+                    normalized_markdown="",
+                    confidence=1.0,
+                    warnings=["visual_model_not_called"],
+                ),
+                None,
+                False,
+                {"model_invoked": False},
+                0.0,
+            )
         ctx = build_visual_context(el, task="Validate the attached table extraction.")
         payload = ctx.model_dump()
         image_bytes = Path(el.image_path).read_bytes() if el.image_path and Path(el.image_path).exists() else b""
@@ -365,7 +454,7 @@ def enrich_elements(
         try:
             t0 = time.perf_counter()
             result, usage = _invoke(
-                table_model, _table_message(el, payload, settings)
+                visual_model, _table_message(el, payload, settings)
             )
             latency_ms = (time.perf_counter() - t0) * 1000
             if not isinstance(result, TableValidation):
@@ -383,10 +472,14 @@ def enrich_elements(
                 0.0,
             )
 
-    concurrency = max(
-        1,
-        int(getattr(settings, "bedrock_visual_concurrency", 8)),
+    configured_concurrency = int(
+        getattr(
+            settings,
+            "visual_model_concurrency",
+            getattr(settings, "bedrock_visual_concurrency", 8),
+        )
     )
+    concurrency = max(1, configured_concurrency)
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         futures = [pool.submit(_analyse_figure, el) for el in figure_jobs]
         futures += [pool.submit(_validate_table, el) for el in table_jobs]
@@ -394,8 +487,10 @@ def enrich_elements(
             element_id, result, err, cache_hit, usage, latency_ms = fut.result()
             if cache_hit:
                 stats["cache_hits"] += 1
-            else:
-                stats["bedrock_calls"] += 1
+            elif usage.get("model_invoked", True):
+                stats["visual_model_calls"] += 1
+                if provider == "bedrock":
+                    stats["bedrock_calls"] += 1
                 stats["input_tokens"] += usage.get("input_tokens", 0)
                 stats["output_tokens"] += usage.get("output_tokens", 0)
                 stats["retry_count"] += usage.get("retry_count", 0)

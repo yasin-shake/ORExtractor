@@ -93,7 +93,7 @@ Set `INGESTION_BACKEND=docling` to use the layout-aware pipeline. Docling's loss
 
 Multi-report ingestion uses a bounded three-stage pipeline: a persistent,
 killable Docling process parses report N with reusable converters, a worker enriches report
-N-1 through Bedrock, and a single indexing worker embeds/upserts report N-2.
+N-1 through the configured visual provider, and a single indexing worker embeds/upserts report N-2.
 Only the indexing worker writes to Chroma. Adaptive OCR skips RapidOCR when
 nearly every page already has native text; scanned or mixed documents retain
 GPU OCR. Long reports are checkpointed into page ranges, and a hard timeout
@@ -107,7 +107,23 @@ When MinerU fallback is enabled, startup now requires a configured MinerU
 service or CLI. Degraded and timed-out results remain retryable and are not
 stored as completed parser caches or resumable manifests.
 
-Claude Haiku is called only for routed figures and important or suspicious tables. A failed visual call is recorded per element and does not stop normal text ingestion. Reconstruction is deterministic through Plotly or Graphviz, never executes model-generated code, and rejects geological maps, cross-sections, mine plans, block models, and similar technical geometry.
+Qwen3-VL runs locally through Ollama by default and is called only for routed
+figures and important or suspicious tables. Set `VISUAL_MODEL_PROVIDER=bedrock`
+to use the retained Bedrock adapter. A failed visual call is recorded per
+element and does not stop normal text ingestion. Reconstruction is deterministic
+through Plotly or Graphviz, never executes model-generated code, and rejects
+geological maps, cross-sections, mine plans, block models, and similar technical
+geometry.
+
+Visual crops wholly contained in the top or bottom 10% page-margin bands are
+treated as header/footer furniture: they are removed before enrichment,
+chunking, and parser-cache persistence, and their generated crop files are
+deleted. Remaining crops are deduplicated by content and a conservative
+perceptual comparison. Repeated body occurrences retain their own report
+context but share one canonical image and only the canonical occurrence is
+eligible for visual-model enrichment. Visual context includes the caption,
+leading and trailing narrative, and matching references such as
+`Figure 16-27`, `Figure 16.27`, or `Figure 16 27` found elsewhere in the report.
 
 Partition output, normalized elements, structured model responses, final chunks, and reconstruction audit manifests are stored below `RAG_ARTIFACT_DIR`. Versioned cache keys include source, image/context, parser, model, prompt, and schema versions. Chroma records retain scalar metadata for source, page, type, NI Item, section title, element ID, and asset provenance.
 
@@ -123,7 +139,7 @@ python rag_app.py inspect-elements --file report.pdf
 python rag_app.py compare-parsers --file report.pdf
 ```
 
-The first command deletes the configured Chroma collection and rebuilds it from exactly one PDF. Use `--partition-only` first when validating parser artifacts without embeddings, Bedrock calls, or Chroma writes.
+The first command deletes the configured Chroma collection and rebuilds it from exactly one PDF. Use `--partition-only` first when validating parser artifacts without embeddings, visual-model calls, or Chroma writes.
 For a nested report, pass its relative source path, for example
 `--file "Sedar_2024/April/report.pdf"`. A basename remains valid when it is
 unique across all configured PDF trees.
@@ -148,6 +164,20 @@ or rebuilding Chroma. It never mixes providers within a collection: the
 provider, model, dimensions, query instruction, and maximum token length are
 stored as collection metadata. Changing any of them requires `--rebuild`; an
 incompatible existing collection is rejected with a rebuild command.
+
+Benchmark the configured visual model without opening or changing Chroma:
+
+```bash
+ollama pull qwen3-vl:8b-instruct-q8_0
+python rag_app.py benchmark-visuals --provider ollama \
+  --model qwen3-vl:8b-instruct-q8_0 --real-samples 20
+```
+
+The command always runs eight generated gold cases and can add a deterministic
+sample of retained real parser artifacts. It writes JSON and Markdown results
+under `benchmark_results/visual` unless `--output-dir` is supplied. Retained
+real cases are marked unverified; they are not counted as gold until a human
+reviewer supplies expectations.
 
 After upgrading to chapter-aware ingestion, or if heading detection needs a refresh, re-tag existing chunks with NI Item metadata without re-embedding:
 
@@ -475,9 +505,16 @@ The API is available at `http://localhost:8000`. The bundled `docker-compose.yml
 | `PARSER_REQUIRE_FALLBACK_READY` | `true` | Fail before ingestion when the enabled MinerU adapter is unavailable |
 | `RAG_ARTIFACT_DIR` | `ingestion_artifacts` | Retained source crops, raw/normalized partition output, enrichments, chunks, and audit manifests |
 | `RAG_INGEST_WORK_DIR` | `.ingestion_work` | Temporary short-path PDF aliases used by native parsers |
+| `VISUAL_MODEL_PROVIDER` | `ollama` in `.env.example` | Visual enrichment provider: `ollama` or `bedrock` |
+| `VISUAL_MODEL_CONCURRENCY` | `1` | Maximum concurrent calls to the selected visual provider |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Local Ollama API endpoint |
+| `OLLAMA_VISUAL_MODEL` | `qwen3-vl:8b-instruct-q8_0` | Local vision model and quantization |
+| `OLLAMA_VISUAL_TIMEOUT_SECONDS` | `300` | Per-call timeout for local visual analysis |
+| `OLLAMA_VISUAL_CONTEXT_LENGTH` | `8192` | Context window for schema, prompt, image tokens, and output |
+| `OLLAMA_KEEP_ALIVE` | `5m` | How long Ollama retains the model after a request |
 | `BEDROCK_VISUAL_MODEL_ID` | Claude 3.5 Haiku inference profile | Separate Bedrock model/inference profile for visual ingestion |
 | `BEDROCK_VISUAL_MAX_TOKENS` | `3500` | Maximum output tokens per visual/table call |
-| `BEDROCK_VISUAL_CONCURRENCY` | `8` | Maximum concurrent visual/table calls |
+| `BEDROCK_VISUAL_CONCURRENCY` | `8` | Legacy fallback when `VISUAL_MODEL_CONCURRENCY` is unset |
 | `BEDROCK_VISUAL_CONFIDENCE_THRESHOLD` | `0.85` | Minimum confidence for reconstruction |
 | `VISUAL_MAX_CALLS_PER_REPORT` | `30` | Combined per-report visual/table call limit |
 | `VISUAL_MAX_TABLE_CALLS_PER_REPORT` | `20` | Table-validation share of the report call budget |

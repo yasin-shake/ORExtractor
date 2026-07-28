@@ -8,9 +8,9 @@ from pydantic import BaseModel, Field
 
 
 PIPELINE_VERSION = "4"
-VISUAL_PROMPT_VERSION = "1"
-VISUAL_SCHEMA_VERSION = "2"
-NORMALIZER_VERSION = "2"
+VISUAL_PROMPT_VERSION = "8"
+VISUAL_SCHEMA_VERSION = "3"
+NORMALIZER_VERSION = "3"
 
 
 class ElementRecord(BaseModel):
@@ -43,6 +43,7 @@ class ElementRecord(BaseModel):
     caption: str = ""
     preceding_text: str = ""
     following_text: str = ""
+    figure_references: List[str] = Field(default_factory=list)
 
     is_duplicate: bool = False
     skip_reason: Optional[str] = None
@@ -133,6 +134,7 @@ class DocumentContext(BaseModel):
     caption: str = ""
     preceding_text: str = ""
     following_text: str = ""
+    figure_references: List[str] = Field(default_factory=list)
     table_html: Optional[str] = None
     task: str = "Classify and analyse the attached visual."
 
@@ -181,15 +183,41 @@ class DiagramSpecification(BaseModel):
     edges: List[DiagramEdge] = Field(default_factory=list)
 
 
+FigureType = Literal[
+    "bar_chart",
+    "line_chart",
+    "scatter_chart",
+    "pie_chart",
+    "flowchart",
+    "process_diagram",
+    "geological_map",
+    "geological_cross_section",
+    "cross_section",
+    "mine_plan",
+    "drill_hole_map",
+    "pit_shell",
+    "resource_block_model",
+    "contour_map",
+    "3d_geological_view",
+    "map",
+    "photo",
+    "logo",
+    "technical_drawing",
+    "schematic",
+    "other",
+    "unknown",
+]
+
+
 class VisualAnalysis(BaseModel):
-    figure_type: str = "unknown"
+    figure_type: FigureType = "unknown"
     caption: str = ""
     description: str = ""
     contains_quantitative_data: bool = False
     reconstruction_supported: bool = False
     reconstruction_method: Literal["plotly", "graphviz", "none", ""] = "none"
     values_are_estimated: bool = False
-    confidence: float = 0.0
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     warnings: List[str] = Field(default_factory=list)
     labels: List[str] = Field(default_factory=list)
     chart: Optional[ChartSpecification] = None
@@ -201,7 +229,7 @@ class TableValidation(BaseModel):
     description: str = ""
     issues: List[str] = Field(default_factory=list)
     normalized_markdown: str = ""
-    confidence: float = 0.0
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     warnings: List[str] = Field(default_factory=list)
 
 
@@ -218,6 +246,10 @@ class ReportIngestStats(BaseModel):
     text_elements: int = 0
     tables: int = 0
     figures: int = 0
+    visual_model_provider: str = ""
+    visual_model_calls: int = 0
+    visual_model_latency_ms: float = 0.0
+    # Compatibility counters retained for existing reports and dashboards.
     bedrock_calls: int = 0
     cache_hits: int = 0
     partition_cache_hits: int = 0
@@ -253,6 +285,9 @@ class IngestionMetrics(BaseModel):
     chunk_ms: float = 0.0
     embed_ms: float = 0.0
     total_ms: float = 0.0
+    visual_model_calls: int = 0
+    visual_model_latency_ms: float = 0.0
+    # Compatibility counters retained for existing reports and dashboards.
     bedrock_calls: int = 0
     cache_hits: int = 0
     partition_cache_hits: int = 0
@@ -280,6 +315,7 @@ UNSUPPORTED_RECONSTRUCTION_TYPES = frozenset(
         "geological_cross_section",
         "cross_section",
         "mine_plan",
+        "mine_plan_diagram",
         "drill_hole_map",
         "pit_shell",
         "resource_block_model",
@@ -293,4 +329,12 @@ UNSUPPORTED_RECONSTRUCTION_TYPES = frozenset(
 )
 
 SUPPORTED_CHART_TYPES = frozenset({"bar_chart", "line_chart", "scatter_chart", "pie_chart", "bar", "line", "scatter", "pie"})
-SUPPORTED_DIAGRAM_TYPES = frozenset({"flowchart", "process_diagram", "process", "diagram"})
+SUPPORTED_DIAGRAM_TYPES = frozenset(
+    {
+        "flowchart",
+        "process_diagram",
+        "process_flow_diagram",
+        "process",
+        "diagram",
+    }
+)

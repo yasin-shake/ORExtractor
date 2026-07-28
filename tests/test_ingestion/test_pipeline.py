@@ -13,6 +13,7 @@ import ingestion.pipeline as pipeline_module
 from ingestion.chunking import elements_to_documents
 from ingestion.models import (
     ElementRecord,
+    IngestionMetrics,
     ParserQualityReport,
     ParserResult,
     ReportIngestStats,
@@ -60,6 +61,25 @@ class _Settings:
     openai_api_key = "sk-test"
     openai_base_url = None
     embed_batch_size = 64
+
+
+def test_ingestion_metrics_record_provider_neutral_visual_calls():
+    report = ReportIngestStats(
+        filename="r.pdf",
+        visual_model_provider="ollama",
+        visual_model_calls=3,
+        visual_model_latency_ms=1250.5,
+    )
+    totals = IngestionMetrics(
+        visual_model_calls=3,
+        visual_model_latency_ms=1250.5,
+    )
+
+    assert report.visual_model_provider == "ollama"
+    assert report.visual_model_calls == 3
+    assert report.visual_model_latency_ms == 1250.5
+    assert totals.visual_model_calls == 3
+    assert totals.visual_model_latency_ms == 1250.5
 
 
 def test_elements_to_documents_pipeline_boundary():

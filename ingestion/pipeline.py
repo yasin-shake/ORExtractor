@@ -30,6 +30,7 @@ from ingestion.cache import (
 from ingestion.chunking import elements_to_documents
 from ingestion.config import DoclingExecutionConfig
 from ingestion.context import annotate_hierarchy
+from ingestion.visual_filtering import filter_visual_artifacts
 from ingestion.enrichment import enrich_elements
 from ingestion.indexing import add_documents_with_retry, build_doc_id
 from ingestion.models import (
@@ -624,6 +625,9 @@ class IngestionPipeline:
                 work.partition_cache_hit = bool(
                     parser_result.metadata.get("parser_cache_hit")
                 )
+                parser_result.elements = filter_visual_artifacts(
+                    parser_result.elements
+                )
                 if parser_result.elements:
                     save_parser_cache(
                         artifact_dir,
@@ -632,6 +636,10 @@ class IngestionPipeline:
                         self.parser_router,
                         parser_result,
                     )
+            else:
+                parser_result.elements = filter_visual_artifacts(
+                    parser_result.elements
+                )
             if work.partition_cache_hit:
                 work.metrics.partition_cache_hits += 1
             if not parser_result.elements:
@@ -733,6 +741,10 @@ class IngestionPipeline:
         cache = EnrichmentCache(work.artifact_dir / "cache")
         default_stats = {
             "bedrock_calls": 0,
+            "visual_model_calls": 0,
+            "visual_model_provider": str(
+                getattr(self.settings, "visual_model_provider", "bedrock")
+            ),
             "cache_hits": 0,
             "warnings": 0,
             "input_tokens": 0,
@@ -768,6 +780,9 @@ class IngestionPipeline:
         work.metrics.bedrock_calls += int(
             work.enrichment_stats.get("bedrock_calls", 0)
         )
+        work.metrics.visual_model_calls += int(
+            work.enrichment_stats.get("visual_model_calls", 0)
+        )
         work.metrics.cache_hits += int(
             work.enrichment_stats.get("cache_hits", 0)
         )
@@ -777,9 +792,15 @@ class IngestionPipeline:
         work.metrics.output_tokens += int(
             work.enrichment_stats.get("output_tokens", 0)
         )
-        work.metrics.bedrock_latency_ms += float(
+        visual_latency_ms = float(
             work.enrichment_stats.get("latency_ms", 0.0)
         )
+        work.metrics.visual_model_latency_ms += visual_latency_ms
+        if (
+            work.enrichment_stats.get("visual_model_provider")
+            == "bedrock"
+        ):
+            work.metrics.bedrock_latency_ms += visual_latency_ms
         work.metrics.retry_count += int(
             work.enrichment_stats.get("retry_count", 0)
         )
@@ -977,13 +998,24 @@ class IngestionPipeline:
             text_elements=work.text_elements,
             tables=work.tables,
             figures=work.figures,
+            visual_model_provider=str(
+                enrich_stats.get("visual_model_provider", "")
+            ),
+            visual_model_calls=int(
+                enrich_stats.get("visual_model_calls", 0)
+            ),
+            visual_model_latency_ms=float(
+                enrich_stats.get("latency_ms", 0.0)
+            ),
             bedrock_calls=int(enrich_stats.get("bedrock_calls", 0)),
             cache_hits=int(enrich_stats.get("cache_hits", 0)),
             partition_cache_hits=int(work.partition_cache_hit),
             input_tokens=int(enrich_stats.get("input_tokens", 0)),
             output_tokens=int(enrich_stats.get("output_tokens", 0)),
-            bedrock_latency_ms=float(
-                enrich_stats.get("latency_ms", 0.0)
+            bedrock_latency_ms=(
+                float(enrich_stats.get("latency_ms", 0.0))
+                if enrich_stats.get("visual_model_provider") == "bedrock"
+                else 0.0
             ),
             retry_count=int(enrich_stats.get("retry_count", 0)),
             reconstructed_charts=reconstructed_charts,
@@ -1027,7 +1059,8 @@ class IngestionPipeline:
             f"(parse={stats.parse_ms / 1000:.1f}s, "
             f"enrich={stats.enrich_ms / 1000:.1f}s, "
             f"embed={stats.embed_ms / 1000:.1f}s, "
-            f"bedrock={stats.bedrock_calls}, "
+            f"visual={stats.visual_model_provider or 'disabled'}:"
+            f"{stats.visual_model_calls}, "
             f"ocr={stats.effective_do_ocr}, "
             f"parser={stats.selected_parser}, "
             f"quality={stats.parser_quality_score:.3f}, "
@@ -1104,7 +1137,7 @@ class IngestionPipeline:
             source_file=source_file,
             artifact_dir=artifact_dir,
         )
-        elements = parser_result.elements
+        elements = filter_visual_artifacts(parser_result.elements)
         elements = annotate_hierarchy(elements)
         from collections import Counter
 

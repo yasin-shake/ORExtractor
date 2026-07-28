@@ -17,7 +17,9 @@ from ingestion.models import (
 
 
 class _Settings:
+    visual_model_provider = "bedrock"
     bedrock_visual_model_id = "haiku-test"
+    ollama_visual_model = "qwen3-vl:test"
     chunk_size = 1400
     chunk_overlap = 150
     embed_model = "text-embedding-3-small"
@@ -119,6 +121,41 @@ def test_text_only_manifest_is_resumable_in_text_only_mode(tmp_path):
 
     assert should_skip_pdf(entry, pdf, settings) is True
     settings.resolved_visual_enrichment_enabled = True
+    assert should_skip_pdf(entry, pdf, settings) is False
+
+
+def test_visual_manifest_is_invalidated_when_local_provider_or_model_changes(tmp_path):
+    pdf = tmp_path / "local-visual.pdf"
+    pdf.write_bytes(b"%PDF local visual")
+    settings = _Settings()
+    settings.visual_model_provider = "ollama"
+    settings.ollama_visual_model = "qwen3-vl:q8"
+    entry = build_manifest_entry(
+        pdf,
+        settings,
+        element_count=1,
+        visual_count=1,
+        table_count=0,
+        indexed_chunk_count=1,
+        failed_element_ids=[],
+        parser_result=ParserResult(
+            source_file=pdf.name,
+            parser="docling",
+            parser_version="test",
+            quality=ParserQualityReport(score=1.0),
+        ),
+    )
+
+    assert entry["visual_model"] == {
+        "provider": "ollama",
+        "model": "qwen3-vl:q8",
+    }
+    assert should_skip_pdf(entry, pdf, settings) is True
+
+    settings.ollama_visual_model = "qwen3-vl:q4"
+    assert should_skip_pdf(entry, pdf, settings) is False
+    settings.ollama_visual_model = "qwen3-vl:q8"
+    settings.visual_model_provider = "bedrock"
     assert should_skip_pdf(entry, pdf, settings) is False
 
 

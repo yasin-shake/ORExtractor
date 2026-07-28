@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from ingestion.cache import visual_model_signature
 from ingestion.models import (
     SUPPORTED_CHART_TYPES,
     SUPPORTED_DIAGRAM_TYPES,
@@ -26,9 +27,39 @@ def normalize_figure_type(figure_type: str) -> str:
     return (figure_type or "unknown").strip().lower().replace(" ", "_").replace("-", "_")
 
 
+_UNSUPPORTED_CONTENT_MARKERS = (
+    "geological_map",
+    "geologic_map",
+    "geological_cross_section",
+    "geologic_cross_section",
+    "mine_plan",
+    "drill_hole_map",
+    "pit_shell",
+    "resource_block_model",
+    "block_model",
+    "contour_map",
+    "3d_geological",
+    "three_dimensional_geological",
+)
+
+
 def reconstruction_allowed(analysis: VisualAnalysis, settings) -> Tuple[bool, str]:
     ftype = normalize_figure_type(analysis.figure_type)
     if ftype in UNSUPPORTED_RECONSTRUCTION_TYPES:
+        return False, "unsupported_category"
+    safety_text = normalize_figure_type(
+        " ".join(
+            (
+                analysis.caption,
+                analysis.description,
+                *analysis.labels,
+            )
+        )
+    )
+    if any(
+        marker in safety_text
+        for marker in _UNSUPPORTED_CONTENT_MARKERS
+    ):
         return False, "unsupported_category"
     if not analysis.reconstruction_supported:
         return False, "model_rejected"
@@ -193,6 +224,7 @@ def reconstruct_visuals(
     recon_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, dict] = {}
     warnings: List[str] = []
+    visual_model = visual_model_signature(settings)
 
     for el in elements:
         analysis = analyses.get(el.element_id)
@@ -214,7 +246,8 @@ def reconstruct_visuals(
             "values_estimated": analysis.values_are_estimated,
             "confidence": analysis.confidence,
             "warnings": list(analysis.warnings),
-            "visual_model_id": getattr(settings, "bedrock_visual_model_id", ""),
+            "visual_model_provider": visual_model["provider"],
+            "visual_model_id": visual_model["model"],
             "visual_prompt_version": VISUAL_PROMPT_VERSION,
             "visual_schema_version": VISUAL_SCHEMA_VERSION,
             "pipeline_version": PIPELINE_VERSION,

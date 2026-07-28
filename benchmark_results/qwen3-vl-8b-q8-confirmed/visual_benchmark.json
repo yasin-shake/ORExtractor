@@ -1,0 +1,904 @@
+{
+  "provider": "ollama",
+  "model_id": "qwen3-vl:8b-instruct-q8_0",
+  "summary": {
+    "total_cases": 28,
+    "gold_cases": 8,
+    "successful_cases": 28,
+    "passed_cases": 8,
+    "schema_valid_rate": 1.0,
+    "classification_accuracy": 1.0,
+    "required_text_recall": 1.0,
+    "numeric_recall": 1.0,
+    "mean_latency_ms": 5631.661657142858,
+    "input_tokens": 40605,
+    "output_tokens": 11789
+  },
+  "cases": [
+    {
+      "case_id": "resource-table",
+      "source": "synthetic",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": true,
+      "required_text_recall": 1.0,
+      "numeric_recall": 1.0,
+      "unexpected_numbers": [],
+      "passed": true,
+      "input_tokens": 1147,
+      "output_tokens": 152,
+      "latency_ms": 2739.0726,
+      "output": {
+        "is_valid": true,
+        "description": "The table presents mineral resource estimates categorized as 'Measured' and 'Indicated', with corresponding tonnes (Mt) and gold grade (g/t). The structure is consistent, all cells contain numeric or categorical data, and there are no malformed HTML elements or merged headers.",
+        "issues": [],
+        "normalized_markdown": "| Category | Tonnes (Mt) | Gold Grade (g/t) |\n|---|---|---|\n| Measured | 12.5 | 1.20 |\n| Indicated | 30.0 | 0.85 |",
+        "confidence": 1.0,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "economics-table",
+      "source": "synthetic",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": true,
+      "required_text_recall": 1.0,
+      "numeric_recall": 1.0,
+      "unexpected_numbers": [],
+      "passed": true,
+      "input_tokens": 1147,
+      "output_tokens": 130,
+      "latency_ms": 2264.4766,
+      "output": {
+        "is_valid": true,
+        "description": "The table presents project economics metrics with consistent structure, no malformed HTML, and all numeric values are present.",
+        "issues": [],
+        "normalized_markdown": "| Metric | Value | Unit |\n|---|---|---|\n| After-tax NPV | 425 | USD M |\n| IRR | 18.5 | % |\n| Initial Capex | 310 | USD M |\n| Mine Life | 14 | years |",
+        "confidence": 1.0,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "production-bar-chart",
+      "source": "synthetic",
+      "task": "figure",
+      "schema_valid": true,
+      "classification_correct": true,
+      "required_text_recall": 1.0,
+      "numeric_recall": 1.0,
+      "unexpected_numbers": [],
+      "passed": true,
+      "input_tokens": 1442,
+      "output_tokens": 407,
+      "latency_ms": 5949.736,
+      "output": {
+        "figure_type": "bar_chart",
+        "caption": "Annual Production of Copper (kt) for years 2025 to 2027.",
+        "description": "A bar chart showing the annual copper production in kilotons (kt) for three consecutive years: 2025, 2026, and 2027. The production values are explicitly labeled on top of each bar as 80 kt for 2025, 110 kt for 2026, and 95 kt for 2027.",
+        "contains_quantitative_data": true,
+        "reconstruction_supported": true,
+        "reconstruction_method": "plotly",
+        "values_are_estimated": false,
+        "confidence": 1.0,
+        "warnings": [],
+        "labels": [
+          "Copper (kt)",
+          "Year"
+        ],
+        "chart": {
+          "chart_type": "bar",
+          "title": "Annual Production",
+          "x_label": "Year",
+          "y_label": "Copper (kt)",
+          "x_unit": "",
+          "y_unit": "kt",
+          "x_min": null,
+          "x_max": null,
+          "y_min": null,
+          "y_max": null,
+          "expected_series_count": 1,
+          "series": [
+            {
+              "name": "Copper Production",
+              "points": [
+                {
+                  "x": "2025",
+                  "y": 80.0,
+                  "label": "80"
+                },
+                {
+                  "x": "2026",
+                  "y": 110.0,
+                  "label": "110"
+                },
+                {
+                  "x": "2027",
+                  "y": 95.0,
+                  "label": "95"
+                }
+              ]
+            }
+          ]
+        },
+        "diagram": null
+      },
+      "error": ""
+    },
+    {
+      "case_id": "recovery-line-chart",
+      "source": "synthetic",
+      "task": "figure",
+      "schema_valid": true,
+      "classification_correct": true,
+      "required_text_recall": 1.0,
+      "numeric_recall": 1.0,
+      "unexpected_numbers": [],
+      "passed": true,
+      "input_tokens": 1442,
+      "output_tokens": 370,
+      "latency_ms": 5499.66,
+      "output": {
+        "figure_type": "line_chart",
+        "caption": "Gold Recovery by Grind Size",
+        "description": "A line chart showing the relationship between grind size (in micrometers) and gold recovery percentage. As grind size decreases from 150 um to 75 um, recovery increases from 82% to 92%. The data points are labeled with their respective recovery percentages.",
+        "contains_quantitative_data": true,
+        "reconstruction_supported": true,
+        "reconstruction_method": "plotly",
+        "values_are_estimated": false,
+        "confidence": 1.0,
+        "warnings": [],
+        "labels": [
+          "Recovery (%)",
+          "Grind Size (um)"
+        ],
+        "chart": {
+          "chart_type": "line",
+          "title": "Gold Recovery by Grind Size",
+          "x_label": "Grind Size (um)",
+          "y_label": "Recovery (%)",
+          "x_unit": "um",
+          "y_unit": "%",
+          "x_min": null,
+          "x_max": null,
+          "y_min": null,
+          "y_max": null,
+          "expected_series_count": 1,
+          "series": [
+            {
+              "name": "Gold Recovery",
+              "points": [
+                {
+                  "x": 150.0,
+                  "y": 82.0,
+                  "label": "82"
+                },
+                {
+                  "x": 100.0,
+                  "y": 88.0,
+                  "label": "88"
+                },
+                {
+                  "x": 75.0,
+                  "y": 92.0,
+                  "label": "92"
+                }
+              ]
+            }
+          ]
+        },
+        "diagram": null
+      },
+      "error": ""
+    },
+    {
+      "case_id": "grade-scatter-chart",
+      "source": "synthetic",
+      "task": "figure",
+      "schema_valid": true,
+      "classification_correct": true,
+      "required_text_recall": 1.0,
+      "numeric_recall": 1.0,
+      "unexpected_numbers": [],
+      "passed": true,
+      "input_tokens": 1442,
+      "output_tokens": 404,
+      "latency_ms": 5944.6492,
+      "output": {
+        "figure_type": "scatter_chart",
+        "caption": "Drillhole Grade by Depth",
+        "description": "A scatter plot showing gold grades in grams per tonne (g/t) at different depths (50 m, 100 m, and 150 m). The data points are labeled with their respective gold grades: 1.2 g/t at 50 m, 2.4 g/t at 100 m, and 1.8 g/t at 150 m.",
+        "contains_quantitative_data": true,
+        "reconstruction_supported": true,
+        "reconstruction_method": "plotly",
+        "values_are_estimated": false,
+        "confidence": 1.0,
+        "warnings": [],
+        "labels": [
+          "Gold (g/t)",
+          "Depth (m)"
+        ],
+        "chart": {
+          "chart_type": "scatter",
+          "title": "Drillhole Grade by Depth",
+          "x_label": "Depth (m)",
+          "y_label": "Gold (g/t)",
+          "x_unit": "m",
+          "y_unit": "g/t",
+          "x_min": 50.0,
+          "x_max": 150.0,
+          "y_min": null,
+          "y_max": null,
+          "expected_series_count": 3,
+          "series": [
+            {
+              "name": "Gold Grade",
+              "points": [
+                {
+                  "x": 50.0,
+                  "y": 1.2,
+                  "label": "1.2"
+                },
+                {
+                  "x": 100.0,
+                  "y": 2.4,
+                  "label": "2.4"
+                },
+                {
+                  "x": 150.0,
+                  "y": 1.8,
+                  "label": "1.8"
+                }
+              ]
+            }
+          ]
+        },
+        "diagram": null
+      },
+      "error": ""
+    },
+    {
+      "case_id": "process-flow-diagram",
+      "source": "synthetic",
+      "task": "figure",
+      "schema_valid": true,
+      "classification_correct": true,
+      "required_text_recall": 1.0,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": true,
+      "input_tokens": 1442,
+      "output_tokens": 398,
+      "latency_ms": 5728.3588,
+      "output": {
+        "figure_type": "process_diagram",
+        "caption": "Copper Concentrator Process Flow",
+        "description": "A linear process flow diagram showing the steps in copper ore concentration: ROM Ore → Crushing → Grinding → Flotation → Copper Concentrate.",
+        "contains_quantitative_data": false,
+        "reconstruction_supported": true,
+        "reconstruction_method": "graphviz",
+        "values_are_estimated": false,
+        "confidence": 1.0,
+        "warnings": [],
+        "labels": [
+          "ROM Ore",
+          "Crushing",
+          "Grinding",
+          "Flotation",
+          "Copper Concentrate"
+        ],
+        "chart": null,
+        "diagram": {
+          "diagram_type": "process",
+          "title": "Copper Concentrator Process Flow",
+          "nodes": [
+            {
+              "id": "ROM Ore",
+              "label": "ROM Ore"
+            },
+            {
+              "id": "Crushing",
+              "label": "Crushing"
+            },
+            {
+              "id": "Grinding",
+              "label": "Grinding"
+            },
+            {
+              "id": "Flotation",
+              "label": "Flotation"
+            },
+            {
+              "id": "Copper Concentrate",
+              "label": "Copper Concentrate"
+            }
+          ],
+          "edges": [
+            {
+              "source": "ROM Ore",
+              "target": "Crushing",
+              "label": ""
+            },
+            {
+              "source": "Crushing",
+              "target": "Grinding",
+              "label": ""
+            },
+            {
+              "source": "Grinding",
+              "target": "Flotation",
+              "label": ""
+            },
+            {
+              "source": "Flotation",
+              "target": "Copper Concentrate",
+              "label": ""
+            }
+          ]
+        }
+      },
+      "error": ""
+    },
+    {
+      "case_id": "geological-cross-section",
+      "source": "synthetic",
+      "task": "figure",
+      "schema_valid": true,
+      "classification_correct": true,
+      "required_text_recall": 1.0,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": true,
+      "input_tokens": 1442,
+      "output_tokens": 172,
+      "latency_ms": 2956.5879,
+      "output": {
+        "figure_type": "geological_cross_section",
+        "caption": "Geological Cross Section A-A'",
+        "description": "A geological cross-section showing a fault (F1) cutting through a quartz vein. The section is oriented from west to east, with the fault dipping diagonally across the profile.",
+        "contains_quantitative_data": false,
+        "reconstruction_supported": false,
+        "reconstruction_method": "none",
+        "values_are_estimated": false,
+        "confidence": 1.0,
+        "warnings": [
+          "This is a geological cross-section, not a process diagram. The prohibited-geometry safety rule has been applied."
+        ],
+        "labels": [
+          "WEST",
+          "EAST"
+        ],
+        "chart": null,
+        "diagram": null
+      },
+      "error": ""
+    },
+    {
+      "case_id": "mine-plan",
+      "source": "synthetic",
+      "task": "figure",
+      "schema_valid": true,
+      "classification_correct": true,
+      "required_text_recall": 1.0,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": true,
+      "input_tokens": 1442,
+      "output_tokens": 173,
+      "latency_ms": 2943.0774,
+      "output": {
+        "figure_type": "mine_plan",
+        "caption": "Open Pit Mine Plan - Phase 2",
+        "description": "A top-down view of an open pit mine in Phase 2, showing concentric oval-shaped haul roads or bench levels. The outermost and innermost rings are black; intermediate rings are purple. A label 'Haul Road' points to the innermost black ring. A north arrow is present in the upper right corner.",
+        "contains_quantitative_data": false,
+        "reconstruction_supported": false,
+        "reconstruction_method": "none",
+        "values_are_estimated": false,
+        "confidence": 1.0,
+        "warnings": [],
+        "labels": [
+          "Haul Road"
+        ],
+        "chart": null,
+        "diagram": null
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Sedar_2024 NI 43 101 Technical Report/February 2024/18_Rokmaster Resources Corp.  Rokmaster Resources Corp. (000031923).pdf:p133:ec62767533ed180f9a46e43d",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 1697,
+      "output_tokens": 392,
+      "latency_ms": 5306.9935,
+      "output": {
+        "is_valid": false,
+        "description": "The table contains malformed HTML structure, inconsistent column alignment due to merged headers spanning all columns for 'Channel Number 1', and missing numeric content in the 'Weighted Average Au (g/t)' column for multiple rows. The presence of a row labeled 'Channel No. 1 Highlight' with data only in the Length and Weighted Average Au columns further breaks structural consistency.",
+        "issues": [
+          "Malformed HTML: <th colspan=\"8\"> used to span all 8 columns, which is not semantically appropriate for header rows; should be avoided unless explicitly needed for grouping or section headers.",
+          "Inconsistent column structure: The merged header row spans all columns but does not align with the data below it in terms of expected content alignment and semantic meaning. This creates visual and structural confusion.",
+          "Missing numeric content: The 'Weighted Average Au (g/t)' column is empty for multiple rows (P303901, P303902, P303903, P303906, P303907, P303908), which contradicts the table's purpose of presenting assay data.",
+          "Row 'Channel No. 1 Highlight' has partial data: Only Length and Weighted Average Au are filled; other columns (Au, Ag, Pb, Zn, As) are empty — inconsistent with surrounding rows that contain full data."
+        ],
+        "normalized_markdown": "",
+        "confidence": 0.95,
+        "warnings": [
+          "The table may be visually interpretable in context but is not structurally valid for automated processing or formal reporting.",
+          "Consider reformatting the merged header to use a proper section row with <th> tags and avoid colspan across all columns unless necessary for grouping."
+        ]
+      },
+      "error": ""
+    },
+    {
+      "case_id": "EDV-SMGO-TR01-NRP-002_0_Sabodala_MC_REP_1_SEDAR.pdf:p588:90604457d7ca3387af1c569c",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 1777,
+      "output_tokens": 534,
+      "latency_ms": 6975.3752,
+      "output": {
+        "is_valid": true,
+        "description": "The table extraction is structurally sound with consistent column headers and numeric content where expected. The merged header 'TRUCK COUNTS' spans all year columns correctly, and no malformed HTML or inconsistent column counts are detected. Missing values (empty cells) are appropriate for sparse data representation in this context.",
+        "issues": [],
+        "normalized_markdown": "| Deposit/Year | 2026 | 2027 | 2028 | 2029 | 2030 | 2031 | 2032 | 2033 |\n|---|---|---|---|---|---|---|---|---|\n| **TRUCK COUNTS** |  |  |  |  |  |  |  |  |\n| MAS |  | 13 | 17 | 7 | 21 | 29 | 11 | 0 |\n| KIA |  |  |  | 5 | 1 |  |  |  |\n| KIC | 3 | 8 | 9 | 3 | 2 |  |  |  |\n| MKM |  | 4 |  |  |  |  |  |  |\n| GBW | 6 | 6 |  |  |  |  |  |  |\n| NKE | 5 | 6 | 10 | 4 | 1 |  |  |  |\n| NKW | 12 |  |  |  |  |  |  |  |\n| MCZ | 11 | 6 |  |  |  |  |  |  |\n| MNZ | 9 | 15 | 11 | 21 | 19 | 7 | 0 |  |\n| MDL | 5 | 4 | 1 |  |  |  |  |  |\n| MDS | 6 |  |  |  |  |  |  |  |\n| SMN | 3 |  |  |  |  |  |  |  |\n| TOTAL | 36 | 38 | 40 | 37 | 39 | 35 | 12 | 1 |",
+        "confidence": 0.95,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Sedar_2024 NI 43 101 Technical Report/March 2024/1_Temas Resources Corp.  Temas Resources Corp. (000049522).pdf:p133:42ea141f535851bc36363789",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 213,
+      "output_tokens": 94,
+      "latency_ms": 1359.8239,
+      "output": {
+        "is_valid": false,
+        "description": "The provided table HTML is empty (null), meaning no tabular data was extracted. Validation cannot proceed without content to analyze for malformed structure, column consistency, merged headers, or numeric content.",
+        "issues": [
+          "Table HTML is null — no content available for validation."
+        ],
+        "normalized_markdown": "",
+        "confidence": 1.0,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Sedar_2024 NI 43 101 Technical Report/June_2024/2_Fury Gold Mines Limited  Fury Gold Mines Limited (000027371) 27 Jun 2024 2106 EDT.pdf:p18:1fb14d094338a242420f8cf9",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 1461,
+      "output_tokens": 464,
+      "latency_ms": 6012.8603,
+      "output": {
+        "is_valid": true,
+        "description": "The table is well-structured with consistent columns and no malformed HTML. All numeric content is present and correctly aligned under the 'Cost (C$)' column. Merged headers are appropriately used for summary rows without disrupting data integrity. No inconsistencies or missing values detected.",
+        "issues": [],
+        "normalized_markdown": "| Item | Details | Cost (C$) |\n|---|---|---|\n| Labour | Staff Wages, Technical and Support Contractors | 1,750,000 |\n| Assaying | Sampling and Analytical | 750,000 |\n| Drilling | Diamond Drilling (30,000m at $175/m) | 5,250,000 |\n| Till Sampling | Detailed sampling program | 1,500,000 |\n| Land Management | Consultants. Assessment Filing, Claim maintenance | 750,000 |\n| Community Relations | Community Tours, Outreach | 75,000 |\n| Information Technology | Remote site communications and IT | 35,000 |\n| Safety | Equipment, Training and Supplies | 75,000 |\n| Expediting | Expediting | 150,000 |\n| Camp Costs | Equipment, Maintenance, Food, Supplies | 250,000 |\n| Freight and Transportation | Freight, Travel, Helicopter | 450,000 |\n| Fuel |  | 1,200,000 |\n| General and Administration |  | 100,000 |\n| Update MRE and PEA |  | 600,000 |\n| Sub-total |  | 12,935,000 |\n| Contingency (10%) |  | 1,293,500 |\n| Total |  | 14,228,500 |",
+        "confidence": 1.0,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "KatangaMining_Technical_report_11072019.pdf:p170:a327d7e6878808fac7e733f8",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 2809,
+      "output_tokens": 1035,
+      "latency_ms": 13219.0222,
+      "output": {
+        "is_valid": true,
+        "description": "The table is structurally sound with consistent column alignment, no malformed HTML, and all numeric content present where expected. Merged headers are appropriately used for resource classification categories (Indicated, Measured and Indicated, Inferred) spanning multiple rows without disrupting data integrity. All subtotals are correctly aligned under their respective classifications. No missing or inconsistent numeric values observed.",
+        "issues": [],
+        "normalized_markdown": "| Mineral Resource Classification | Project Area | Mt | %TCu | %TCo |\n|---|---|---|---|---|\n|  | KOV OP and KTE | - | - | - |\n|  | Kananga OP | - | - | - |\n|  | Tilwezembe OP | - | - | - |\n|  | KITD Tailings | - | - | - |\n|  | Subtotal | 16.3 | 3.58 | 0.57 |\n| Indicated Resource | KTO UG | 65.6 | 3.92 | 0.46 |\n| Indicated Resource | Mashamba East OP | 35.9 | 1.72 | 0.61 |\n| Indicated Resource | Mashamba East UG | 21.9 | 1.72 | 0.67 |\n| Indicated Resource | T-17 UG | 9.4 | 4.44 | 0.65 |\n| Indicated Resource | KOV OP and KTE | 106.8 | 4.8 | 0.53 |\n| Indicated Resource | Kananga OP | 4.1 | 1.61 | 0.79 |\n| Indicated Resource | Tilwezembe OP | 9.5 | 1.89 | 0.60 |\n| Indicated Resource | KITD Tailings | 6.1 | 1.44 | 0.17 |\n| Indicated Resource | Subtotal | 259.3 | 3.64 | 0.54 |\n| Measured and Indicated Resource | KTO UG | 77.7 | 3.92 | 0.48 |\n| Measured and Indicated Resource | Mashamba East OP | 35.9 | 1.72 | 0.61 |\n| Measured and Indicated Resource | Mashamba East UG | 21.9 | 1.72 | 0.67 |\n| Measured and Indicated Resource | T-17 UG | 13.6 | 3.89 | 0.61 |\n| Measured and Indicated Resource | KOV OP and KTE | 106.8 | 4.8 | 0.53 |\n| Measured and Indicated Resource | Kananga OP | 4.1 | 1.61 | 0.79 |\n| Measured and Indicated Resource | Tilwezembe OP | 9.5 | 1.89 | 0.60 |\n| Measured and Indicated Resource | KITD Tailings | 6.1 | 1.44 | 0.17 |\n| Measured and Indicated Resource | Subtotal | 275.6 | 3.64 | 0.54 |\n| Inferred Resource | KTO UG | 48.4 | 3.83 | 0.38 |\n| Inferred Resource | Mashamba East OP | 8.3 | 2.58 | 0.55 |\n| Inferred Resource | Mashamba East UG | 7.6 | 2.87 | 0.48 |\n| Inferred Resource | T-17 UG | 5.2 | 4.21 | 0.98 |\n| Inferred Resource | KOV OP and KTE | 77.6 | 4.40 | 0.38 |\n| Inferred Resource | Kananga OP | 4.0 | 2.00 | 0.98 |\n| Inferred Resource | Tilwezembe OP | 13.8 | 1.75 | 0.60 |\n| Inferred Resource | KITD Tailings | - | - | - |\n| Inferred Resource | Subtotal | 164.9 | 3.78 | 0.44 |",
+        "confidence": 0.98,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Sedar_2024 NI 43 101 Technical Report/February 2024/15_Montage Gold Corp.  Montage Gold Corp. (000048267).pdf:p215:bb59ccbaeeaec5f5d2015212",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 840,
+      "output_tokens": 266,
+      "latency_ms": 3485.0964,
+      "output": {
+        "is_valid": true,
+        "description": "The table is structurally sound with consistent column alignment, no malformed HTML, and all numeric content present where expected. Merged headers are correctly implemented using colspan. No warnings beyond standard formatting.",
+        "issues": [],
+        "normalized_markdown": "| Deposit and Cut-Off Au | Tonnes Million (Indicated) | Au g/t (Indicated) | Au Moz (Indicated) | Tonnes Million (Inferred) | Au g/t (Inferred) | Au Moz (Inferred) |\n|---|---|---|---|---|---|---|\n| Koné 0.20 g/t | 229 | 0.59 | 4.34 | 25 | 0.5 | 0.40 |\n| Gbongogo 0.50 g/t | 11 | 1.48 | 0.52 | - | - | - |\n| Total | 240 | 0.63 | 4.87 | 25 | 0.5 | 0.40 |",
+        "confidence": 0.98,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Sedar_2024 NI 43 101 Technical Report/February 2024/11_Andean Precious Metals Corp.  Andean Precious Metals Corp. (000047056).pdf:p175:d42b536f750391b283be5fa4",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 1543,
+      "output_tokens": 458,
+      "latency_ms": 5816.1269,
+      "output": {
+        "is_valid": true,
+        "description": "The table is structurally sound with consistent column headers and numeric content. No malformed HTML, merged headers, or inconsistent columns detected. All data cells contain either numeric values or '-' placeholders for missing data. The table accurately reflects the sensitivity analysis of mineral resource tonnage and grade by cut-off grade.",
+        "issues": [],
+        "normalized_markdown": "| Cut-off Ag g/t | Tonnes (kt) | AG (g/t) | Tonnes (kt) | AG (g/t) | Tonnes (kt) | AG (g/t) | Tonnes (kt) | AG (g/t) |\n|---|---|---|---|---|---|---|---|---|\n| 40 | - | - | 637 | 160 | 637 | 160 | 446 | 144 |\n| 50 | - | - | 637 | 160 | 637 | 160 | 446 | 144 |\n| 60 | - | - | 637 | 160 | 637 | 160 | 445 | 145 |\n| 64.3 | - | - | 636 | 160 | 636 | 160 | 445 | 145 |\n| 70 | - | - | 634 | 161 | 634 | 161 | 444 | 145 |\n| 80 | - | - | 618 | 163 | 618 | 163 | 439 | 146 |\n| 90 | - | - | 606 | 164 | 606 | 164 | 428 | 147 |",
+        "confidence": 0.95,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Sedar_2024 NI 43 101 Technical Report/November 2024/6_Prime Mining Corp.  Prime Mining Corp. (000005846).pdf:p254:230b8015806f65b924612810",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 1195,
+      "output_tokens": 348,
+      "latency_ms": 4448.1163,
+      "output": {
+        "is_valid": true,
+        "description": "The table is structurally sound with consistent column alignment, no malformed HTML, and all numeric content present. Merged headers are appropriately used for the 'Processing' section without disrupting data integrity.",
+        "issues": [],
+        "normalized_markdown": "| Parameter | Unit | Value |\n|---|---|---|\n| Waste mining cost | $/tonne | 2.00 |\n| Ore mining cost 1 | $/tonne | 2.50 |\n| Mining loss | % | 5 |\n| Mining dilution | % | 5 |\n| Slope angle | degrees | 42-47 (by zone) |\n| **Processing** |  |  |\n| Heap leach recoveries | % | 73% Au, 25% Ag |\n| Mill recoveries | % | 95.6% Au, 81% Ag |\n| Heap leach cost | $/tonne (ore) | 5.53 |\n| Mill cost | $/tonne (ore) | 16.81 |\n| General and administration (G&A) | $/tonne (ore) | 2.00 |\n| Price 2 | $/oz | 1,950 Au, 25.24 Ag |\n| Selling cost | % | 1 (on both Au and Ag) |\n| Royalty 3 | % | 3.00 |",
+        "confidence": 0.98,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Technical Assessment Report.pdf:p92:f20f9baf90670eb211515233",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 498,
+      "output_tokens": 151,
+      "latency_ms": 2028.4605,
+      "output": {
+        "is_valid": true,
+        "description": "The table is well-formed with consistent column structure and numeric content in all cells. No malformed HTML, merged headers, or missing data detected.",
+        "issues": [],
+        "normalized_markdown": "| Category | Reserve (Mt) | Grade Cu (%) | Contained Metal Cu (t) |\n| --- | --- | --- | --- |\n| Proved . | 2.66 | 1.35 | 35,948 |\n| Probable | 4.76 | 1.40 | 66,679 |",
+        "confidence": 0.98,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Sedar_2024 NI 43 101 Technical Report/August 2024/22_Westgold Resources Limited  Westgold Resources Limited (000047807) 01 Aug 2024 1213 EDT.pdf:p283:8396f30c2d39c91ede9b52b8",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 693,
+      "output_tokens": 216,
+      "latency_ms": 2787.9538,
+      "output": {
+        "is_valid": true,
+        "description": "The table is structurally sound with consistent column alignment and numeric content. No malformed HTML, merged headers, or missing data detected. All header groupings are properly spanned using colspan, and all cells contain expected numeric or percentage values.",
+        "issues": [],
+        "normalized_markdown": "| | Actual Tonnes | Actual Grade | Actual Oz | Claimed Tonnes | Claimed Grade | Claimed Oz | % Variance Tonnes | % Variance Grade | % Variance Oz |\n|---|---|---|---|---|---|---|---|---|---|\n| Open Pit | 195,949 | 1.32 | 8,317 | 167,009 | 1.63 | 8,779 | +17% | -20% | -5% |\n",
+        "confidence": 0.98,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Sedar_2024 NI 43 101 Technical Report/January 2024/1_Andean Precious Metals Corp.pdf:p277:2e156bbdff476be6ec4772ae",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 1250,
+      "output_tokens": 333,
+      "latency_ms": 4295.2025,
+      "output": {
+        "is_valid": false,
+        "description": "The table contains malformed HTML structure and inconsistent column headers that compromise data integrity. Specifically, the header row has a blank <td> cell at the start which is not semantically appropriate for a table with categorical rows (Classific). Additionally, there are merged cells with inconsistent labeling — notably 'Recovered Metal Silver' spans two columns but its second column label '(k-oz)' is misaligned and appears to be orphaned. The header row also contains duplicate 'NSR' headers which may indicate extraction error or formatting artifact. Finally, the last row's 'Total Prov' has a non-numeric value '+ Prob' in the COG column, suggesting potential data corruption.",
+        "issues": [
+          "Malformed HTML: Blank <td> cell at start of header row",
+          "Inconsistent columns: Merged headers with misaligned labels (e.g., 'Recovered Metal Silver' spans two columns but its second label '(k-oz)' is not properly aligned or labeled)",
+          "Duplicate column headers: Two consecutive 'NSR' headers in the first row",
+          "Missing numeric content: The COG column for 'Total Prov' contains text '+ Prob' instead of a number, which breaks numerical consistency"
+        ],
+        "normalized_markdown": "",
+        "confidence": 0.1,
+        "warnings": [
+          "The table may have been extracted from an image or PDF with OCR errors — consider re-extraction with higher-resolution source.",
+          "Column headers are ambiguous and potentially misaligned; manual verification is strongly recommended before use in reporting."
+        ]
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Sedar_2024 NI 43 101 Technical Report/March 2024/17_Trigon Metals Inc.  Trigon Metals Inc. (000010678).pdf:p223:2475537b34c781c7d5c6bfc1",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 2996,
+      "output_tokens": 797,
+      "latency_ms": 10187.9206,
+      "output": {
+        "is_valid": true,
+        "description": "The table is structurally sound with consistent column alignment, no malformed HTML, and all numeric content present. Merged headers are not used; subtotals and grand totals are correctly aligned. No missing or inconsistent data in critical columns.",
+        "issues": [],
+        "normalized_markdown": "| Category | Grade | No per shift | Shifts per day | Total |\n|---|---|---|---|---|\n| Engineering Support |  |  |  |  |\n| UG Diesel Fitter | C2 | 1 | 2 | 2 |\n| UG Diesel Fitter Aides | B1 | 2 | 2 | 4 |\n| UG Diesel Fitter Assistants | A3 | 2 | 2 | 4 |\n| UG Fitter | C2 | 1 | 2 | 2 |\n| UG Fitter Aides | B1 | 2 | 2 | 4 |\n| UG Fitter Assistants | A3 | 2 | 2 | 4 |\n| Sub-total |  |  |  | 20 |\n| Underground Support |  |  |  |  |\n| Pump Supervisors | C3 | 1 | 2 | 2 |\n| Pump attendants | B1 | 5 | 2 | 10 |\n| Tip attendants | A3 | 2 | 2 | 4 |\n| Sub-total |  |  |  | 16 |\n| Total |  |  |  | 48 |\n| Processing Plant |  |  |  |  |\n| Manager Metallurgy | E1 |  |  |  |\n| Plant Manager | D4 | 1 | 1 | 1 |\n| Met Accountant | D1 |  |  |  |\n| Plant Engineer | D4 | 1 | 1 | 1 |\n| Reliability Engineer | D2 | 1 | 1 | 1 |\n| Engineering Supervisor | C3 | 1 | 1 | 1 |\n| Fitter | C2 | 6 | 1 | 6 |\n| Boilermaker | C2 | 2 | 1 | 2 |\n| Welder | C2 | 1 | 1 | 1 |\n| Semi-skilled | B4 | 3 | 1 | 3 |\n| Lubricator | B3 | 1 | 1 | 1 |\n| Plant Foreman | C4 | 1 | 1 | 1 |\n| Shift Supervisor | C2 | 1 | 3 | 3 |\n| Swing Operators | B3 | 1 | 3 | 3 |\n| Fitter Operators | B3 | 1 | 3 | 3 |\n| Flotation Operator | B2 | 1 | 3 | 3 |\n| Grinding Operator | B2 | 1 | 3 | 3 |\n| Crusher Operator | B2 | 1 | 3 | 3 |\n| Assistants | A3 | 13 | 3 | 39 |\n| Office Administrator | C1 | 1 | 1 | 1 |\n| Metallurgist | C3 | 1 | 1 | 1 |\n| R&D Metallurgist | C4 | 1 | 1 | 1 |\n| Total |  |  |  | 78 |\n| GRAND TOTAL |  |  |  | 380 |",
+        "confidence": 0.95,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "R_05-2898-01_SRK_ABR_20260123_RevD.pdf:p168:d4e7e71a0acbeed2a469c9cf",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 1416,
+      "output_tokens": 436,
+      "latency_ms": 5565.7679,
+      "output": {
+        "is_valid": true,
+        "description": "The table is structurally sound with consistent column alignment, no malformed HTML, and all numeric content present in the 'Density (t/m³)' column. Merged headers are appropriately handled via rowspan without disrupting data integrity.",
+        "issues": [],
+        "normalized_markdown": "| Mineral Zone | Lithology | Alteration | Density (t/m³) |\n|---|---|---|---|\n| All | landfill removal | All | 1.8 |\n| All | Gravel | All | 2.3 |\n| Leached | All except Gravel | All | 2.394 |\n| Secondary | All except Gravel | ARG/QS | 2.37 |\n| Secondary | BXTUR | BXTUR | 2.386 |\n| Secondary | All except Gravel | KB/KFELD/Q/PROP/IDT1/IDT2 | 2.55 |\n| Secondary | GND/IDT | All | 2.386 |\n| Primary | BXTUR | All | 2.645 |\n| Primary | AND/GND | All | 2.79 |\n| Primary | BXI/BXI_1 | All | 2.731 |\n| Primary | IDT | All except KFELD | 2.8 |\n| Primary | IDT | KFELD | 2.733 |\n| Primary | PQD | KB | 2.64 |\n| Primary | PQD | KFELD | 2.735 |\n| Primary | PQD | QS | 2.563 |\n| Primary | PQD | Q | 2.72 |\n| Primary | PQD | PROP | 2.79 |\n| Primary | PQD | PROP | 2.444 |",
+        "confidence": 0.98,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "ncu_ni_43-101_report_16apr2019.pdf:p180:1c07cde3d9c278d6df7da9c5",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 1026,
+      "output_tokens": 287,
+      "latency_ms": 3684.1948,
+      "output": {
+        "is_valid": true,
+        "description": "The table is well-formed with consistent column structure, no merged headers or malformed HTML. All cells contain text content (no missing numeric values), and the data appears complete and logically structured for NI 43-101 reporting context.",
+        "issues": [],
+        "normalized_markdown": "| EU | Direction X | Direction Y | Direction Z | Observation |\n|---:|:---|:---|:---|:---|\n| 1 | No | Yes | No | High grade peaks |\n| 2 | Yes | Yes | Yes | Boundary conditions |\n| 3 | No | No | No | No observation |\n| 4 | No | No | No | No observation |\n| 5 | Yes | No | No | High grade peaks |\n| 6 | No | No | No | No observation |\n| 7 | Yes | No | No | High grade peaks |\n| 8 | Yes | Yes | No | High grade peaks |\n| 9 | Yes | Yes | No | High grade peaks and boundary conditions |\n| 10 | Yes | Yes | Yes | High grade peaks |\n| 11 | No | No | Yes | High grade peaks |",
+        "confidence": 0.98,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "G10129-RPX_PEA_Rep_Rev_D-Final.pdf:p196:78e8f5f015b0d5506dbfe93a",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 3959,
+      "output_tokens": 1324,
+      "latency_ms": 17029.7549,
+      "output": {
+        "is_valid": true,
+        "description": "The table is structurally sound with consistent column alignment, no malformed HTML, and all numeric content present in expected columns. Merged headers are appropriately used (rowspan) without disrupting data integrity. No missing or inconsistent numeric values detected.",
+        "issues": [],
+        "normalized_markdown": "| Hole (#) | From (m) | To (m) | Length (m)* | Gold (g/t) | Zone |\n|---|---|---|---|---|---|\n|  | 353.05 | 353.92 | 0.87 | 8.76 |  |\n| SD-23-447 | 413.38 | 424.00 | 10.62 | 1.01 |  |\n| including | 413.38 | 414.67 | 1.29 | 3.68 |  |\n| SD-23-448 | 649.49 | 651.58 | 2.09 | 5.33 | Jubilee Shear |\n| SD-23-449 | 354.73 | 372.68 | 17.95 | 1.22 |  |\n| including | 354.73 | 355.81 | 1.08 | 6.67 | Jubilee Shear |\n| and | 363.21 | 364.29 | 1.08 | 3.36 |  |\n| SD-23-451 | 297.48 | 306.25 | 8.77 | 5.06 | Jubilee/Minto B Shear |\n| including | 298.36 | 299.18 | 0.82 | 5.74 |  |\n| and | 299.18 | 300.00 | 0.82 | 26.00 |  |\n| and | 303.00 | 306.25 | 3.25 | 4.12 |  |\n|  | 316.10 | 330.43 | 14.33 | 15.26 |  |\n| including | 323.48 | 324.67 | 1.19 | 171.00 |  |\n| and | 329.33 | 330.43 | 1.10 | 4.02 |  |\n|  | 355.38 | 358.86 | 3.48 | 10.76 |  |\n| including | 355.38 | 356.54 | 1.16 | 23.50 |  |\n| and | 356.54 | 357.70 | 1.16 | 5.01 |  |\n| SD-23-452 | 101.50 | 103.91 | 2.41 | 6.10 |  |\n| including | 102.70 | 103.91 | 1.21 | 9.13 | Minto C Shear |\n|  | 212.38 | 213.57 | 1.19 | 4.41 | Minto B Shear |\n|  | 439.67 | 441.00 | 1.33 | 6.34 | Below Jubilee Shear |\n| SD-23-454 | 114.83 | 115.85 | 1.02 | 7.17 | Minto C Shear |\n| SD-23-455 | 681.15 | 684.90 | 3.75 | 8.89 |  |\n| including | 683.76 | 684.90 | 1.14 | 21.60 | Jubilee Shear |\n| SD-23-456 | 49.53 | 50.77 | 1.24 | 6.03 | Minto B Shear |\n|  | 242.70 | 261.84 | 19.14 | 3.04 |  |\n| including | 245.00 | 246.07 | 1.07 | 4.81 |  |\n| and | 249.12 | 250.03 | 0.91 | 5.21 |  |\n| and | 251.85 | 252.80 | 0.95 | 5.58 | Jubilee Shear |\n| and | 252.80 | 253.56 | 0.76 | 23.00 |  |\n| and | 256.29 | 260.75 | 4.46 | 3.57 |  |\n|  | 278.60 | 279.64 | 1.04 | 46.90 |  |",
+        "confidence": 0.98,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Form_45-106F1_Report_of_Exempt_Distribution_for_UBS_(Canada)_Global_Master_Fund___UBS_(Canada)_Global_Master_Fund_(07_Jun_2026)_-_EN.pdf:p4:bd1731b15a15f903fd16c12c",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 454,
+      "output_tokens": 245,
+      "latency_ms": 3223.2467,
+      "output": {
+        "is_valid": false,
+        "description": "The table contains malformed HTML structure with empty data cells under merged headers and inconsistent column alignment, which violates NI 43-101 reporting standards for financial disclosures.",
+        "issues": [
+          "Malformed HTML: Empty <td> tags appear beneath merged header rows without corresponding content or proper row grouping.",
+          "Inconsistent columns: The table header spans two columns ('Exercise price (Canadian $) Expiry') but the subsequent data rows do not contain matching values for 'Lowest' and 'Highest' under those headers.",
+          "Merged headers present, but no actual data is provided beneath them — violates requirement to report numeric content for convertible securities.",
+          "Missing numeric content: No exercise prices, expiry dates, conversion ratios, or other terms are populated in the table body."
+        ],
+        "normalized_markdown": "",
+        "confidence": 0.98,
+        "warnings": [
+          "The table structure is syntactically invalid and cannot be rendered correctly without data.",
+          "No financial content is present — this may indicate a placeholder or extraction error, not an intentional omission in the original document."
+        ]
+      },
+      "error": ""
+    },
+    {
+      "case_id": "technical_report_-_Moss_Mine_MRE.pdf:p156:4cfb092249e45d5ee2db11f7",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 2773,
+      "output_tokens": 967,
+      "latency_ms": 12263.7906,
+      "output": {
+        "is_valid": true,
+        "description": "The table is structurally sound with consistent column alignment, no malformed HTML, and all numeric content present. Merged headers are correctly implemented and do not interfere with data integrity. No warnings or issues detected.",
+        "issues": [],
+        "normalized_markdown": "| Domain | No of Blks | % Estm | AGOK | AGID | AGNN | AGOK | AGID | AGNN | Mean |\n|---|---|---|---|---|---|---|---|---|---|\n| 1 | 387,615 | 10.4% | 0.0105 | 0.0105 | 0.0109 | 0.0066 | 0.0071 | 0.0127 | 0.963 |\n| 2 | 549,140 | 10.0% | 0.0143 | 0.0140 | 0.0137 | 0.0110 | 0.0113 | 0.0180 | 1.044 |\n| 3 | 148,870 | 18.1% | 0.0101 | 0.0099 | 0.0117 | 0.0067 | 0.0067 | 0.0158 | 0.863 |\n| 4 | 306,479 | 97.6% | 0.0473 | 0.0475 | 0.0469 | 0.0554 | 0.0575 | 0.0975 | 1.009 |\n| 5 | 132,522 | 98.5% | 0.0429 | 0.0433 | 0.0436 | 0.0537 | 0.0567 | 0.0891 | 0.984 |\n| 6 | 2,522 | 100% | 0.2671 | 0.2706 | 0.2254 | 0.1841 | 0.2223 | 0.3495 | 1.185 |\n| 7 | 27,349 | 88.2% | 0.3068 | 0.3133 | 0.2914 | 0.2627 | 0.3165 | 0.4715 | 1.053 |\n| 8 | 1,650 | 81.0% | 0.0148 | 0.0146 | 0.0131 | 0.0143 | 0.0156 | 0.0162 | 1.130 |\n| 9 | 284,501 | 94.8% | 0.0363 | 0.0361 | 0.0370 | 0.0287 | 0.0307 | 0.0517 | 0.981 |\n| 10 | 22,702 | 99.2% | 0.0514 | 0.0514 | 0.0511 | 0.0210 | 0.0232 | 0.0463 | 1.006 |\n| TOTAL | 1,863,350 | 17.1% | 0.0291 | 0.0291 | 0.0289 | 0.0583 | 0.0635 | 0.0863 | 1.007 |",
+        "confidence": 1.0,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "7._Technical_Report.pdf:p98:1d706e3cdd5826ac1aa07dec",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 515,
+      "output_tokens": 219,
+      "latency_ms": 2868.2649,
+      "output": {
+        "is_valid": true,
+        "description": "The table is structurally sound with consistent column alignment, no malformed HTML, and all numeric content present. Merged headers are appropriately used without ambiguity. The data is complete and interpretable.",
+        "issues": [],
+        "normalized_markdown": "| Code | Analyte | Range (ppm) | Description |\n|---|---|---|---|\n| PGM-ICP23 | Pt | 0.005-10 | Pt, Pd and Au by fire assay and ICP-AES finish |\n| PGM-ICP23 | Pd | 0.001-10 | Pt, Pd and Au by fire assay and ICP-AES finish |\n| PGM-ICP23 | Au | 0.001-10 | Pt, Pd and Au by fire assay and ICP-AES finish |",
+        "confidence": 0.98,
+        "warnings": []
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Aura_Matupa_SK1300_GE21_final_.pdf:p225:e6d65be35b676cab2a1908d8",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 1026,
+      "output_tokens": 543,
+      "latency_ms": 6890.4744,
+      "output": {
+        "is_valid": false,
+        "description": "The table contains inconsistent column alignment, missing numeric content in key cells (e.g., Scenario2 for U/F 1st Thickner and U/F2nd Thickner), and a malformed header cell with merged columns. The presence of 'Tobe Determined' as data is acceptable per NI 43-101 context but does not resolve structural issues.",
+        "issues": [
+          "Inconsistent column alignment: Scenario2 has missing values in multiple rows (U/F 1st Thickner, U/F2nd Thickner), creating misalignment with other columns.",
+          "Malformed HTML: The header row uses 'colspan=\"2\"' for the first merged cell but does not properly align subsequent headers or data cells under it. This may cause rendering issues in some viewers.",
+          "Missing numeric content: Empty cells (e.g., Scenario2 U/F 1st Thickner, U/F2nd Thickner) are present where numerical values are expected, potentially indicating incomplete data extraction.",
+          "Header inconsistency: The header 'Solid-Liquid Parameters' spans two columns but the subsequent headers ('Cyclones O/F', 'MM%') do not visually align with the merged cell in all renderings."
+        ],
+        "normalized_markdown": "| Solid-Liquid Parameters | Scenario1 | Scenario2 | Scenario3 |\n|---|---|---|---|\n| Cyclones O/F | 35 | 35 | 42 |\n| U/F 1st Thickner | 50 | 50 |  |\n| CIL | 50 | 50 | 42 |\n| Detox | 46-47 | 46-47 | 38-40 |\n| Feed2nd Thickner | 46-47 |  | 38-40 |\n| U/F2nd Thickner | 55-60 |  | 55-60 |\n| Filtration Feed | 55-60 | 46-47 | 55-60 |\n| Filtration Cake Moisture | Tobe Determined | Tobe Determined | Tobe Determined |",
+        "confidence": 0.8,
+        "warnings": [
+          "The table is functionally interpretable but structurally incomplete due to missing values in Scenario2 for two rows.",
+          "The merged header may cause confusion when rendered in non-HTML environments; consider reformatting for clarity."
+        ]
+      },
+      "error": ""
+    },
+    {
+      "case_id": "Sedar_2024 NI 43 101 Technical Report/October 2024/35_WINSOME RESOURCES LTD.  WINSOME RESOURCES LTD. (000056341).pdf:p172:1344135bc7ad211684e28be9",
+      "source": "retained-artifact",
+      "task": "table",
+      "schema_valid": true,
+      "classification_correct": null,
+      "required_text_recall": null,
+      "numeric_recall": null,
+      "unexpected_numbers": [],
+      "passed": null,
+      "input_tokens": 1518,
+      "output_tokens": 474,
+      "latency_ms": 6212.4616,
+      "output": {
+        "is_valid": true,
+        "description": "The table is well-formed with consistent column structure, no malformed HTML, and all numeric content present in expected positions. Merged header row is correctly handled. No missing or inconsistent data.",
+        "issues": [],
+        "normalized_markdown": "| Component | Peg 1 | Peg 2 | Peg 3 | Peg 4 | Peg 5 |\n|---|---|---|---|---|---|\n| Li | 0.88 | 0.57 | 1.25 | 1.05 | 0.57 |\n| Li₂O | 1.89 | 1.23 | 2.69 | 2.26 | 1.44 |\n| Fe₂O₃ | 0.62 | 0.47 | 0.80 | 0.74 | 0.71 |\n| SiO₂ | 74.6 | 73.1 | 74.4 | 73.5 | 73.3 |\n| Al₂O₃ | 15.7 | 16.4 | 16.4 | 16.2 | 16.1 |\n| MgO | 0.03 | 0.04 | 0.04 | 0.02 | 0.28 |\n| CaO | 0.13 | 0.29 | 0.29 | 0.27 | 0.32 |\n| Na₂O | 2.62 | 4.02 | 3.00 | 3.55 | 3.88 |\n| K₂O | 3.23 | 3.12 | 0.73 | 1.28 | 2.59 |\n| MnO | 0.14 | 0.17 | 0.26 | 0.30 | 0.14 |",
+        "confidence": 1.0,
+        "warnings": []
+      },
+      "error": ""
+    }
+  ]
+}

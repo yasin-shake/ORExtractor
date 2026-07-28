@@ -49,6 +49,37 @@ def _provenance(item: Any) -> tuple[int, dict[str, Any] | None]:
     }
 
 
+def _page_dimensions(
+    document: Any,
+    page_number: int,
+) -> tuple[float, float] | None:
+    pages = getattr(document, "pages", None) or {}
+    if isinstance(pages, dict):
+        page = pages.get(page_number) or pages.get(str(page_number))
+    else:
+        try:
+            page = pages[page_number - 1]
+        except (IndexError, KeyError, TypeError):
+            page = None
+    size = getattr(page, "size", None)
+    if size is None and isinstance(page, dict):
+        size = page.get("size")
+    if isinstance(size, dict):
+        width = size.get("width")
+        height = size.get("height")
+    else:
+        width = getattr(size, "width", None)
+        height = getattr(size, "height", None)
+    try:
+        parsed_width = float(width)
+        parsed_height = float(height)
+    except (TypeError, ValueError):
+        return None
+    if parsed_width <= 0 or parsed_height <= 0:
+        return None
+    return parsed_width, parsed_height
+
+
 def _iter_items(document: Any) -> Iterable[tuple[Any, int]]:
     iterator = getattr(document, "iterate_items", None)
     if callable(iterator):
@@ -166,6 +197,16 @@ def normalize_docling_document(
             except (TypeError, ValueError):
                 confidence = None
 
+        metadata = {"docling_label": label, "docling_ordinal": ordinal}
+        page_dimensions = _page_dimensions(document, page)
+        if page_dimensions is not None:
+            metadata.update(
+                {
+                    "page_width": page_dimensions[0],
+                    "page_height": page_dimensions[1],
+                }
+            )
+
         records.append(
             ElementRecord(
                 element_id=element_id,
@@ -183,7 +224,7 @@ def normalize_docling_document(
                 parser_version=parser_version,
                 parser_element_id=raw_id,
                 parser_confidence=confidence,
-                metadata={"docling_label": label, "docling_ordinal": ordinal},
+                metadata=metadata,
             )
         )
 

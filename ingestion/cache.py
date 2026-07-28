@@ -315,6 +315,20 @@ def fingerprint_legacy(path: Path) -> str:
     return f"{st.st_mtime_ns}:{st.st_size}"
 
 
+def visual_model_signature(settings) -> dict[str, str]:
+    """Return the provider/model identity that owns enrichment cache entries."""
+
+    provider = str(
+        getattr(settings, "visual_model_provider", "bedrock")
+    ).strip().lower()
+    model = (
+        getattr(settings, "ollama_visual_model", "")
+        if provider == "ollama"
+        else getattr(settings, "bedrock_visual_model_id", "")
+    )
+    return {"provider": provider, "model": str(model)}
+
+
 def manifest_entry_accepted(entry: dict, settings) -> bool:
     acceptance = entry.get("ingestion_acceptance")
     if isinstance(acceptance, dict):
@@ -393,8 +407,18 @@ def should_skip_pdf(entry: Any, pdf_path: Path, settings) -> bool:
         return False
     if entry.get("visual_schema_version") != VISUAL_SCHEMA_VERSION:
         return False
-    if entry.get("visual_model_id") != settings.bedrock_visual_model_id:
-        return False
+    requested_visuals = bool(
+        getattr(settings, "resolved_visual_enrichment_enabled", True)
+    )
+    if requested_visuals:
+        existing_visual_model = entry.get("visual_model")
+        if not isinstance(existing_visual_model, dict):
+            existing_visual_model = {
+                "provider": "bedrock",
+                "model": str(entry.get("visual_model_id", "")),
+            }
+        if existing_visual_model != visual_model_signature(settings):
+            return False
     if entry.get("visual_enrichment_enabled", True) is not bool(
         getattr(
             settings,
@@ -480,7 +504,8 @@ def build_manifest_entry(
         "source_sha256": file_sha256(pdf_path),
         "fingerprint": fingerprint_legacy(pdf_path),
         "pipeline_version": PIPELINE_VERSION,
-        "visual_model_id": settings.bedrock_visual_model_id,
+        "visual_model": visual_model_signature(settings),
+        "visual_model_id": visual_model_signature(settings)["model"],
         "visual_prompt_version": VISUAL_PROMPT_VERSION,
         "visual_schema_version": VISUAL_SCHEMA_VERSION,
         "visual_enrichment_enabled": visual_enrichment_enabled,
