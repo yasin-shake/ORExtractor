@@ -228,6 +228,7 @@ def enrich_elements(
         "latency_ms": 0.0,
         "retry_count": 0,
         "budget_skips": 0,
+        "deferred_element_ids": [],
     }
     elements_by_id = {element.element_id: element for element in elements}
 
@@ -237,6 +238,10 @@ def enrich_elements(
     figure_jobs: List[ElementRecord] = []
     table_jobs: List[ElementRecord] = []
     for el in elements:
+        if el.skip_reason == "visual_budget_limit":
+            # A budget deferral is transient. It must be eligible on the next
+            # resumable pass after earlier jobs have become cache hits.
+            el.skip_reason = None
         ok, reason = should_enrich_figure(el, settings)
         if ok:
             figure_jobs.append(el)
@@ -328,11 +333,67 @@ def enrich_elements(
     all_jobs = [("table", el) for el in table_jobs] + [
         ("figure", el) for el in figure_jobs
     ]
+    if all_jobs and visual_model is None:
+        visual_model = create_visual_model(settings)
+    model_id = (
+        getattr(
+            visual_model,
+            "cache_id",
+            getattr(visual_model, "model_id", "unknown"),
+        )
+        if visual_model is not None
+        else "visual-model-not-invoked"
+    )
+    provider = str(
+        getattr(
+            visual_model,
+            "provider",
+            getattr(settings, "visual_model_provider", "bedrock"),
+        )
+    )
+    stats["visual_model_provider"] = provider
+
+    preloaded: dict[
+        tuple[str, str],
+        VisualAnalysis | TableValidation,
+    ] = {}
+    if cache and not bypass_cache:
+        for kind, el in all_jobs:
+            ctx = build_visual_context(
+                el,
+                task=(
+                    "Validate the attached table extraction."
+                    if kind == "table"
+                    else "Classify and analyse the attached visual."
+                ),
+            )
+            payload = ctx.model_dump()
+            image_bytes = (
+                Path(el.image_path).read_bytes()
+                if el.image_path and Path(el.image_path).exists()
+                else b""
+            )
+            cached = (
+                cache.get_table(el, payload, model_id, image_bytes)
+                if kind == "table"
+                else cache.get_visual(el, payload, model_id, image_bytes)
+            )
+            if cached is not None:
+                preloaded[(kind, el.element_id)] = (
+                    TableValidation.model_validate(cached)
+                    if kind == "table"
+                    else VisualAnalysis.model_validate(cached)
+                )
+
     selected_jobs = []
+    cached_jobs = []
     deferred_jobs = []
     estimated_tokens = 0
     selected_by_kind = {"table": 0, "figure": 0}
     for kind, el in all_jobs:
+        if (kind, el.element_id) in preloaded:
+            cached_jobs.append((kind, el))
+            continue
         text_chars = len(el.preceding_text) + len(el.following_text) + len(el.caption)
         if kind == "table":
             text_chars += len(el.text_as_html or el.text)
@@ -363,45 +424,30 @@ def enrich_elements(
         selected_jobs.append((kind, el))
         selected_by_kind[kind] += 1
         estimated_tokens += job_estimate
-    figure_jobs = [el for kind, el in selected_jobs if kind == "figure"]
+    runnable_jobs = cached_jobs + selected_jobs
+    figure_jobs = [
+        el for kind, el in runnable_jobs if kind == "figure"
+    ]
     table_jobs = [
-        el for kind, el in selected_jobs if kind == "table"
+        el for kind, el in runnable_jobs if kind == "table"
     ] + deterministic_table_jobs
     for kind, el in deferred_jobs:
         if kind == "figure":
             el.skip_reason = "visual_budget_limit"
     stats["budget_skips"] = len(deferred_jobs)
+    stats["deferred_element_ids"] = [
+        el.element_id for _, el in deferred_jobs
+    ]
     stats["estimated_token_budget_used"] = estimated_tokens
     stats["warnings"] += len(deferred_jobs)
-
-    if selected_jobs and visual_model is None:
-        visual_model = create_visual_model(settings)
-    model_id = (
-        getattr(
-            visual_model,
-            "cache_id",
-            getattr(visual_model, "model_id", "unknown"),
-        )
-        if visual_model is not None
-        else "visual-model-not-invoked"
-    )
-    provider = str(
-        getattr(
-            visual_model,
-            "provider",
-            getattr(settings, "visual_model_provider", "bedrock"),
-        )
-    )
-    stats["visual_model_provider"] = provider
 
     def _analyse_figure(el: ElementRecord):
         ctx = build_visual_context(el)
         payload = ctx.model_dump()
         image_bytes = Path(el.image_path).read_bytes() if el.image_path else b""
-        if cache and not bypass_cache:
-            cached = cache.get_visual(el, payload, model_id, image_bytes)
-            if cached is not None:
-                return el.element_id, VisualAnalysis.model_validate(cached), None, True, {}, 0.0
+        cached = preloaded.get(("figure", el.element_id))
+        if cached is not None:
+            return el.element_id, cached, None, True, {}, 0.0
         try:
             t0 = time.perf_counter()
             result, usage = _invoke(
@@ -447,10 +493,9 @@ def enrich_elements(
         ctx = build_visual_context(el, task="Validate the attached table extraction.")
         payload = ctx.model_dump()
         image_bytes = Path(el.image_path).read_bytes() if el.image_path and Path(el.image_path).exists() else b""
-        if cache and not bypass_cache:
-            cached = cache.get_table(el, payload, model_id, image_bytes)
-            if cached is not None:
-                return el.element_id, TableValidation.model_validate(cached), None, True, {}, 0.0
+        cached = preloaded.get(("table", el.element_id))
+        if cached is not None:
+            return el.element_id, cached, None, True, {}, 0.0
         try:
             t0 = time.perf_counter()
             result, usage = _invoke(

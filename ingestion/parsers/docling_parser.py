@@ -178,8 +178,6 @@ class DoclingParser:
             "hard_timeout_seconds": float(
                 self.execution.hard_timeout_seconds
             ),
-            "segment_pages": self.execution.segment_pages,
-            "segment_min_pages": self.execution.segment_min_pages,
         }
 
     def _pipeline_options(
@@ -263,7 +261,7 @@ class DoclingParser:
                         "onnxruntime",
                     )
                 ).strip().lower()
-                valid_backends = {"onnxruntime", "openvino", "paddle", "torch"}
+                valid_backends = {"onnxruntime", "openvino", "torch"}
                 if backend not in valid_backends:
                     raise ValueError(
                         "DOCLING_OCR_BACKEND must be one of "
@@ -777,8 +775,21 @@ class DoclingParser:
         page_count = len(pages) if pages is not None else max(
             (element.page_number for element in elements), default=0
         )
+        quality_elements = elements
+        if page_range is not None:
+            first_page = page_range[0]
+            quality_elements = [
+                element.model_copy(
+                    update={
+                        "page_number": (
+                            element.page_number - first_page + 1
+                        )
+                    }
+                )
+                for element in elements
+            ]
         quality = assess_parser_quality(
-            elements,
+            quality_elements,
             page_count=page_count,
             conversion_status=status,
             **self.quality_policy.assessment_kwargs(),
@@ -1002,50 +1013,60 @@ class DoclingParser:
                 )
 
             preflight = self._preflight_pdf(staged.input_path)
-            page_count = int(preflight.get("page_count", 0) or 0)
-            segment_pages = self.execution.segment_pages
-            segment_min_pages = self.execution.segment_min_pages
             manager = self._worker_manager()
-            if (
-                segment_pages > 0
-                and page_count >= segment_min_pages
-                and page_count > segment_pages
-            ):
-                results: list[tuple[tuple[int, int], ParserResult]] = []
-                for first_page in range(1, page_count + 1, segment_pages):
-                    last_page = min(
-                        page_count,
-                        first_page + segment_pages - 1,
-                    )
-                    page_range = (first_page, last_page)
-                    segment_dir = (
-                        Path(report_dir)
-                        / "segments"
-                        / f"{first_page:04d}-{last_page:04d}"
-                    )
-                    results.append(
-                        (
-                            page_range,
-                            manager.parse(
-                                staged.input_path,
-                                source_file=source_file,
-                                artifact_dir=segment_dir,
-                                page_range=page_range,
-                                preflight=preflight,
-                            ),
-                        )
-                    )
-                return self._combine_segments(
-                    results,
-                    source_file=source_file,
-                    artifact_dir=Path(report_dir),
-                    page_count=page_count,
-                    preflight=preflight,
-                )
             return manager.parse(
                 staged.input_path,
                 source_file=source_file,
                 artifact_dir=Path(report_dir),
+                preflight=preflight,
+            )
+
+    def parse_pages(
+        self,
+        pdf_path: Path,
+        *,
+        source_file: str,
+        artifact_dir: Path,
+        page_range: tuple[int, int],
+    ) -> ParserResult:
+        """Parse one bounded, one-based page window for hybrid routing."""
+        mode = str(
+            getattr(self.settings, "docling_execution_mode", "local")
+        ).lower()
+        if mode != "local":
+            try:
+                import fitz
+
+                with fitz.open(pdf_path) as document:
+                    full_range = (1, len(document))
+            except Exception:
+                full_range = None
+            if page_range != full_range:
+                raise RuntimeError(
+                    "Docling Serve does not support bounded hybrid page "
+                    "windows; disable INGESTION_FAST_LANE or use local mode"
+                )
+            return self.parse(
+                pdf_path,
+                source_file=source_file,
+                artifact_dir=artifact_dir,
+            )
+
+        with stage_pdf_input(pdf_path, self.execution.work_dir) as staged:
+            preflight = self._preflight_pdf(staged.input_path)
+            if not self._process_isolation:
+                return self._parse_document(
+                    staged.input_path,
+                    source_file=source_file,
+                    artifact_dir=artifact_dir,
+                    page_range=page_range,
+                    preflight=preflight,
+                )
+            return self._worker_manager().parse(
+                staged.input_path,
+                source_file=source_file,
+                artifact_dir=artifact_dir,
+                page_range=page_range,
                 preflight=preflight,
             )
 

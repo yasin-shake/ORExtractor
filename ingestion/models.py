@@ -261,6 +261,7 @@ class ReportIngestStats(BaseModel):
     reconstructed_diagrams: int = 0
     warnings: int = 0
     failed_elements: List[str] = Field(default_factory=list)
+    pending_elements: List[str] = Field(default_factory=list)
     indexed_chunks: int = 0
     primary_parser: str = ""
     selected_parser: str = ""
@@ -307,6 +308,28 @@ class IngestionResult(BaseModel):
     reports: List[ReportIngestStats] = Field(default_factory=list)
     errors: List[IngestionError] = Field(default_factory=list)
     metrics: IngestionMetrics = Field(default_factory=IngestionMetrics)
+
+
+class VisualBackfillFileStatus(BaseModel):
+    source_file: str
+    state: Literal["current", "pending", "blocked"]
+    detail: str = ""
+
+
+class VisualBackfillStatus(BaseModel):
+    files: List[VisualBackfillFileStatus] = Field(default_factory=list)
+
+    @property
+    def current(self) -> int:
+        return sum(item.state == "current" for item in self.files)
+
+    @property
+    def pending(self) -> int:
+        return sum(item.state == "pending" for item in self.files)
+
+    @property
+    def blocked(self) -> int:
+        return sum(item.state == "blocked" for item in self.files)
 
 
 UNSUPPORTED_RECONSTRUCTION_TYPES = frozenset(

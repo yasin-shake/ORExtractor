@@ -94,8 +94,6 @@ class ParserQualityPolicy:
 class DoclingExecutionConfig:
     process_isolation: bool = True
     hard_timeout_seconds: float = 900
-    segment_min_pages: int = 300
-    segment_pages: int = 100
     text_first_table_mode: str = "fast"
     work_dir: Path = Path(".ingestion_work")
 
@@ -119,22 +117,6 @@ class DoclingExecutionConfig:
                     )
                 ),
             ),
-            segment_min_pages=max(
-                0,
-                int(
-                    getattr(
-                        settings,
-                        "docling_segment_min_pages",
-                        300,
-                    )
-                ),
-            ),
-            segment_pages=max(
-                0,
-                int(
-                    getattr(settings, "docling_segment_pages", 100)
-                ),
-            ),
             text_first_table_mode=str(
                 getattr(
                     settings,
@@ -150,4 +132,3 @@ class DoclingExecutionConfig:
                 )
             ),
         )
-

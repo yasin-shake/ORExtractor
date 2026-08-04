@@ -134,7 +134,9 @@ python rag_app.py ingest --rebuild --file report.pdf --parser docling
 python rag_app.py ingest --file report.pdf --parser docling --partition-only
 python rag_app.py ingest --file report.pdf --parser docling --no-fallback
 python rag_app.py ingest --file report.pdf --force-parser mineru
-python rag_app.py ingest --reprocess-visuals --parser docling
+python rag_app.py visuals --status
+python rag_app.py visuals --file report.pdf
+python rag_app.py visuals --file report.pdf --refresh
 python rag_app.py inspect-elements --file report.pdf
 python rag_app.py compare-parsers --file report.pdf
 ```
@@ -149,14 +151,22 @@ and enrich visuals afterward:
 
 ```bash
 python rag_app.py ingest --rebuild --parser docling --fallback mineru --no-visual-enrichment
-python rag_app.py ingest --parser docling --fallback mineru
+python rag_app.py visuals
 ```
 
-Both passes are resumable. If interrupted, rerun the same command without
-`--rebuild`; completed reports are skipped using the manifest.
+Both passes are resumable. `visuals` loads the accepted canonical parser
+artifact, regenerates missing crops directly from PDF coordinates, reuses every
+successful element cache entry, and reruns only missing, failed, stale, or
+budget-deferred jobs. It never invokes Docling or MinerU. Successful cached jobs
+do not consume the next run's call allowance, so repeated runs advance through
+large reports. `--refresh` is the explicit destructive-cache intent for
+regenerating successful visual results.
+
+If interrupted, rerun the same command without `--rebuild`; completed reports
+are skipped using the manifest.
 The text-first pass uses `DOCLING_TEXT_FIRST_TABLE_MODE=fast`; the visual pass
-returns to `DOCLING_TABLE_MODE=accurate`. Existing accurate results satisfy a
-fast-pass request, while degraded reports are automatically retried.
+does not change the accepted parser stream. Missing or source-mismatched parser
+artifacts are reported as blocked instead of silently triggering re-ingestion.
 
 The embedding backend is selected once at process startup. If local Qwen fails
 its health check, ORExtractor uses the configured OpenAI fallback before opening
@@ -468,7 +478,7 @@ The API is available at `http://localhost:8000`. The bundled `docker-compose.yml
 | `PARSER_FALLBACK_ENABLED` | `true` | Allow deterministic fallback routing |
 | `DOCLING_EXECUTION_MODE` | `local` | `local` or `serve` |
 | `DOCLING_SERVE_URL` | _(unset)_ | Docling Serve base URL |
-| `DOCLING_OCR_BACKEND` | `onnxruntime` | RapidOCR backend: `onnxruntime`, `openvino`, `paddle`, or `torch`; use `torch` with CUDA PyTorch for GPU OCR |
+| `DOCLING_OCR_BACKEND` | `onnxruntime` | RapidOCR backend: `onnxruntime`, `openvino`, or `torch`; use `torch` with CUDA PyTorch for GPU OCR |
 | `DOCLING_OCR_LANGUAGES` | `english` | Comma-separated OCR languages |
 | `DOCLING_FORCE_FULL_PAGE_OCR` | `false` | OCR every page region; leave disabled to skip unnecessary OCR on native PDF text |
 | `DOCLING_OCR_BITMAP_AREA_THRESHOLD` | `0.05` | Minimum bitmap-area ratio that triggers adaptive OCR |
@@ -491,9 +501,7 @@ The API is available at `http://localhost:8000`. The bundled `docker-compose.yml
 | `DOCLING_PROFILING` | `true` | Persist Docling timings and effective runtime decisions per report |
 | `DOCLING_CONVERTER_CACHE_SIZE` | `2` | Reusable Docling pipeline variants retained in memory |
 | `DOCLING_PROCESS_ISOLATION` | `true` | Run Docling in a persistent process that can be terminated safely |
-| `DOCLING_HARD_TIMEOUT_SECONDS` | `900` | Parent-enforced deadline per document or page segment |
-| `DOCLING_SEGMENT_MIN_PAGES` | `300` | Page count at which checkpointed segment processing begins |
-| `DOCLING_SEGMENT_PAGES` | `100` | Pages processed per checkpointed Docling request |
+| `DOCLING_HARD_TIMEOUT_SECONDS` | `900` | Parent-enforced deadline per document |
 | `MINERU_EXECUTION_MODE` | `service` | `service` or isolated `cli` |
 | `MINERU_API_URL` | _(unset)_ | MinerU service endpoint |
 | `PARSER_MIN_TEXT_PAGE_COVERAGE` | `0.90` | Fallback text-page coverage gate; calibrate on corpus |
@@ -520,6 +528,7 @@ The API is available at `http://localhost:8000`. The bundled `docker-compose.yml
 | `VISUAL_MAX_TABLE_CALLS_PER_REPORT` | `20` | Table-validation share of the report call budget |
 | `VISUAL_MAX_FIGURE_CALLS_PER_REPORT` | `10` | Figure-analysis share of the report call budget |
 | `VISUAL_TOKEN_BUDGET_PER_REPORT` | `350000` | Conservative per-report visual token budget |
+| `VISUAL_CROP_RENDER_SCALE` | `2.0` | Coordinate-based crop scale used by visual-only backfill |
 | `LANGSMITH_TRACING` | `false` | Enable ingestion traces |
 | `LANGSMITH_TRACE_CONTENT` | `false` | Include document content in traces; disabled by default |
 | `AGENT_CHAT` | `1` | `1` = agentic chat (LangGraph/pipeline); `0` = plain RAG chat |

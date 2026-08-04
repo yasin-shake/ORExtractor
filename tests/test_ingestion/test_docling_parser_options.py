@@ -188,7 +188,7 @@ def test_native_memory_failure_retries_safe_batch(monkeypatch, tmp_path):
     assert runtime["page_batch_size"] == 1
 
 
-def test_large_document_is_checkpointed_into_page_segments(
+def test_large_document_is_sent_to_docling_as_one_pdf(
     monkeypatch,
     tmp_path,
 ):
@@ -216,7 +216,7 @@ def test_large_document_is_checkpointed_into_page_segments(
             preflight=None,
         ):
             self.calls.append(page_range)
-            first, last = page_range
+            first, last = (1, 5)
             elements = [
                 ElementRecord(
                     element_id=f"p{page}",
@@ -260,7 +260,7 @@ def test_large_document_is_checkpointed_into_page_segments(
         artifact_dir=tmp_path / "artifacts" / "large",
     )
 
-    assert worker.calls == [(1, 2), (3, 4), (5, 5)]
+    assert worker.calls == [None]
     assert result.page_count == 5
     assert [element.page_number for element in result.elements] == [
         1,
@@ -269,4 +269,4 @@ def test_large_document_is_checkpointed_into_page_segments(
         4,
         5,
     ]
-    assert result.metadata["runtime"]["segmented"] is True
+    assert result.metadata["runtime"].get("segmented") is not True

@@ -112,6 +112,66 @@ def test_reprocess_visuals_bypasses_successful_cache(tmp_path):
     assert forced["visual_model_calls"] == 1
 
 
+def test_cached_visuals_do_not_consume_resume_call_allowance(tmp_path):
+    from PIL import Image
+
+    settings = _Settings(visual_max_calls_per_report=1)
+    cache = EnrichmentCache(tmp_path / "cache")
+    elements = []
+    for index, color in enumerate(("white", "black")):
+        image_path = tmp_path / f"figure-{index}.png"
+        Image.new("RGB", (400, 300), color).save(image_path)
+        elements.append(
+            ElementRecord(
+                element_id=f"f{index}",
+                source_file="r.pdf",
+                category="Image",
+                image_path=str(image_path),
+                image_width=400,
+                image_height=300,
+            )
+        )
+
+    class CountingVisualModel:
+        provider = "ollama"
+        model_id = "qwen3-vl:test"
+        cache_id = "ollama:qwen3-vl:test"
+
+        def __init__(self):
+            self.calls = []
+
+        def analyze(self, request):
+            self.calls.append(request.task)
+            return VisualResponse(
+                value=VisualAnalysis(
+                    figure_type="photo",
+                    description="resumed",
+                    confidence=0.95,
+                )
+            )
+
+    model = CountingVisualModel()
+    _, _, _, first = enrich_elements(
+        elements,
+        settings,
+        cache=cache,
+        visual_model=model,
+    )
+    _, _, _, second = enrich_elements(
+        elements,
+        settings,
+        cache=cache,
+        visual_model=model,
+    )
+
+    assert first["visual_model_calls"] == 1
+    assert first["deferred_element_ids"] == ["f1"]
+    assert second["cache_hits"] == 1
+    assert second["visual_model_calls"] == 1
+    assert second["deferred_element_ids"] == []
+    assert len(model.calls) == 2
+
+
 def test_per_report_call_limit_skips_extra_visuals(tmp_path):
     from PIL import Image
 

@@ -394,6 +394,10 @@ def should_skip_pdf(entry: Any, pdf_path: Path, settings) -> bool:
         return False
     if not manifest_entry_accepted(entry, settings):
         return False
+    if entry.get("failed_element_ids"):
+        return False
+    if entry.get("pending_element_ids"):
+        return False
     if entry.get("source_sha256") != file_sha256(pdf_path):
         return False
     if not _parser_policy_compatible(
@@ -489,6 +493,7 @@ def build_manifest_entry(
     table_count: int,
     indexed_chunk_count: int,
     failed_element_ids: list[str],
+    pending_element_ids: Optional[list[str]] = None,
     visual_enrichment_enabled: bool = True,
     parser_result: ParserResult,
 ) -> dict:
@@ -555,6 +560,7 @@ def build_manifest_entry(
         "table_count": table_count,
         "indexed_chunk_count": indexed_chunk_count,
         "failed_element_ids": failed_element_ids,
+        "pending_element_ids": list(pending_element_ids or []),
         "ingestion_acceptance": {
             "accepted": accepted,
             "retryable": not accepted,

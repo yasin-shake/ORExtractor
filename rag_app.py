@@ -148,8 +148,6 @@ class Settings:
     docling_timeout_seconds: int = 900
     docling_hard_timeout_seconds: int = 900
     docling_process_isolation: bool = True
-    docling_segment_min_pages: int = 300
-    docling_segment_pages: int = 100
     docling_max_pages: int = 1000
     docling_max_file_mb: int = 2048
     docling_model_artifact_revision: str = ""
@@ -183,6 +181,7 @@ class Settings:
     visual_reconstruct_charts: bool = True
     visual_reconstruct_diagrams: bool = True
     visual_enrichment_enabled: bool = True
+    visual_crop_render_scale: float = 2.0
     langsmith_tracing: bool = False
     langsmith_project: str = "orextractor-ingestion"
     langsmith_trace_content: bool = False
@@ -366,12 +365,6 @@ def load_settings() -> Settings:
         docling_process_isolation=_env_bool(
             "DOCLING_PROCESS_ISOLATION", True
         ),
-        docling_segment_min_pages=max(
-            0, int(os.getenv("DOCLING_SEGMENT_MIN_PAGES", "300"))
-        ),
-        docling_segment_pages=max(
-            0, int(os.getenv("DOCLING_SEGMENT_PAGES", "100"))
-        ),
         docling_max_pages=int(os.getenv("DOCLING_MAX_PAGES", "1000")),
         docling_max_file_mb=int(os.getenv("DOCLING_MAX_FILE_MB", "2048")),
         docling_model_artifact_revision=os.getenv(
@@ -437,6 +430,15 @@ def load_settings() -> Settings:
         visual_reconstruct_charts=_env_bool("VISUAL_RECONSTRUCT_CHARTS", True),
         visual_reconstruct_diagrams=_env_bool("VISUAL_RECONSTRUCT_DIAGRAMS", True),
         visual_enrichment_enabled=_env_bool("VISUAL_ENRICHMENT_ENABLED", True),
+        visual_crop_render_scale=max(
+            1.0,
+            float(
+                os.getenv(
+                    "VISUAL_CROP_RENDER_SCALE",
+                    "2.0",
+                )
+            ),
+        ),
         langsmith_tracing=_env_bool("LANGSMITH_TRACING", False),
         langsmith_project=os.getenv("LANGSMITH_PROJECT", "orextractor-ingestion"),
         langsmith_trace_content=_env_bool("LANGSMITH_TRACE_CONTENT", False),
@@ -721,6 +723,53 @@ def ingest(
     )
 
 
+def run_visual_backfill(
+    settings: Settings,
+    *,
+    only_file: Optional[str] = None,
+    refresh: bool = False,
+    status_only: bool = False,
+):
+    """Resume or inspect visual work without invoking a PDF parser."""
+    from ingestion.corpus import CorpusIngestion
+    from ingestion.runtime import IngestionRuntime
+
+    runtime = IngestionRuntime(
+        get_embedder=get_embedder,
+        get_vectorstore=get_vectorstore,
+    )
+    corpus = CorpusIngestion(
+        settings,
+        runtime=None if status_only else runtime,
+    )
+    if status_only:
+        status = corpus.visual_status(only_file=only_file)
+        print(
+            json.dumps(
+                {
+                    **status.model_dump(mode="json"),
+                    "summary": {
+                        "current": status.current,
+                        "pending": status.pending,
+                        "blocked": status.blocked,
+                    },
+                },
+                indent=2,
+            )
+        )
+        return status
+    result = corpus.resume_visuals(
+        only_file=only_file,
+        refresh=refresh,
+    )
+    print(
+        f"\nVisual backfill {result.status}: "
+        f"{len(result.reports)} processed, "
+        f"{len(result.errors)} error(s)."
+    )
+    return result
+
+
 def inspect_elements(settings: Settings, pdf_file: str) -> dict:
     """Parse a PDF and print canonical element and routing diagnostics."""
     from ingestion.pipeline import IngestionPipeline
@@ -837,6 +886,180 @@ def compare_parsers(settings: Settings, pdf_file: str) -> dict:
             "artifacts": result.artifact_paths,
         }
     return {"file": source_file, "parsers": comparison}
+
+
+def run_ingestion_benchmark_cli(
+    settings: Settings,
+    pdf_file: str,
+    *,
+    output_dir: Path,
+    live_docling: bool = False,
+    page_range: str | None = None,
+) -> dict:
+    """Benchmark candidate parsing without writing production vectors."""
+    from copy import copy
+
+    from ingestion.cache import file_sha256
+    from ingestion.models import ParserResult
+    from ingestion.parser_benchmark import run_parser_benchmark
+    from ingestion.parsers.hybrid_parser import HybridDocumentParser
+    from ingestion.parsers.docling_parser import DoclingParser
+
+    pdf_paths = list(
+        iter_pdf_paths(
+            settings.knowledge_dir,
+            settings.extra_pdf_dirs,
+        )
+    )
+    requested = str(pdf_file).replace("\\", "/").casefold()
+    matches = [
+        path
+        for path in pdf_paths
+        if pdf_source_id(
+            path,
+            settings.knowledge_dir,
+            settings.extra_pdf_dirs,
+        ).casefold()
+        == requested
+    ]
+    if not matches:
+        matches = [
+            path
+            for path in pdf_paths
+            if path.name.casefold()
+            == Path(pdf_file).name.casefold()
+            or path.stem.casefold()
+            == Path(pdf_file).stem.casefold()
+        ]
+    direct = Path(pdf_file)
+    if not matches and direct.exists():
+        matches = [direct]
+    if len(matches) != 1:
+        raise FileNotFoundError(
+            f"Expected one benchmark PDF for {pdf_file!r}, "
+            f"found {len(matches)}"
+        )
+
+    pdf_path = filesystem_path(matches[0])
+    source_file = pdf_source_id(
+        matches[0],
+        settings.knowledge_dir,
+        settings.extra_pdf_dirs,
+    )
+    canonical_dir = source_output_path(
+        settings.artifact_dir,
+        source_file,
+        "",
+    )
+    metadata_path = canonical_dir / "parser_cache.json"
+    result_path = canonical_dir / "parser_result.json"
+    if not metadata_path.exists() or not result_path.exists():
+        raise FileNotFoundError(
+            "A canonical parser artifact is required as the benchmark "
+            f"baseline: {canonical_dir}"
+        )
+    metadata = json.loads(
+        metadata_path.read_text(encoding="utf-8")
+    )
+    if metadata.get("source_sha256") != file_sha256(pdf_path):
+        raise RuntimeError(
+            "Canonical parser artifact does not match the current PDF"
+        )
+    baseline = ParserResult.model_validate_json(
+        result_path.read_text(encoding="utf-8")
+    )
+    benchmark_dir = source_output_path(
+        output_dir,
+        source_file,
+        "",
+    )
+    if page_range:
+        match = re.fullmatch(
+            r"\s*(\d+)\s*-\s*(\d+)\s*",
+            page_range,
+        )
+        if not match:
+            raise ValueError(
+                "--pages must use the inclusive FIRST-LAST form"
+            )
+        first_page, last_page = map(int, match.groups())
+        if first_page < 1 or last_page < first_page:
+            raise ValueError(
+                "--pages must be a positive ascending range"
+            )
+        import fitz
+
+        with fitz.open(pdf_path) as source_document:
+            if last_page > len(source_document):
+                raise ValueError(
+                    f"--pages ends at {last_page}, but the PDF has "
+                    f"{len(source_document)} pages"
+                )
+            benchmark_dir = (
+                benchmark_dir
+                / f"pages-{first_page:04d}-{last_page:04d}"
+            )
+            benchmark_dir.mkdir(parents=True, exist_ok=True)
+            sample_path = (
+                benchmark_dir
+                / (
+                    f"{Path(source_file).stem}-pages-"
+                    f"{first_page:04d}-{last_page:04d}.pdf"
+                )
+            )
+            with fitz.open() as sample_document:
+                sample_document.insert_pdf(
+                    source_document,
+                    from_page=first_page - 1,
+                    to_page=last_page - 1,
+                )
+                sample_document.save(sample_path)
+        sample_source = sample_path.name
+        selected_elements = []
+        for element in baseline.elements:
+            if first_page <= element.page_number <= last_page:
+                selected = element.model_copy(deep=True)
+                selected.page_number = (
+                    selected.page_number - first_page + 1
+                )
+                selected.source_file = sample_source
+                selected_elements.append(selected)
+        baseline = baseline.model_copy(deep=True)
+        baseline.source_file = sample_source
+        baseline.elements = selected_elements
+        baseline.page_count = last_page - first_page + 1
+        pdf_path = sample_path
+        source_file = sample_source
+
+    diagnostic = copy(settings)
+    diagnostic.ingestion_fast_lane_enabled = True
+    parser = HybridDocumentParser(diagnostic)
+    timing_baseline_parser = (
+        DoclingParser(diagnostic)
+        if live_docling
+        else None
+    )
+    try:
+        report, json_path, markdown_path = run_parser_benchmark(
+            pdf_path,
+            source_file=source_file,
+            baseline=baseline,
+            candidate_parser=parser,
+            output_dir=benchmark_dir,
+            timing_baseline_parser=timing_baseline_parser,
+        )
+    finally:
+        close_parser = getattr(parser, "close", None)
+        if callable(close_parser):
+            close_parser()
+        if timing_baseline_parser is not None:
+            timing_baseline_parser.close()
+    print(
+        f"Parser benchmark accepted={report['accepted']}; "
+        f"JSON={json_path}; Markdown={markdown_path}"
+    )
+    return report
+
 
 def reindex_chapters(settings: Settings, vectorstore: Chroma) -> None:
     """Rebuild chapter indexes directly from documents already in Chroma."""
@@ -1338,6 +1561,25 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Force visual enrichment even when the PDF fingerprint is unchanged.",
     )
+    visuals_parser = subparsers.add_parser(
+        "visuals",
+        help="Resume visual enrichment from canonical parser artifacts.",
+    )
+    visuals_parser.add_argument(
+        "--file",
+        default=None,
+        help="Backfill a single PDF by filename or relative source path.",
+    )
+    visuals_parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Report current, pending, and blocked files without publishing.",
+    )
+    visuals_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Explicitly regenerate successful visual-model results.",
+    )
 
     inspect_parser = subparsers.add_parser(
         "inspect-elements",
@@ -1383,6 +1625,41 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("benchmark_results") / "visual",
         help="Directory for benchmark images and JSON/Markdown results.",
+    )
+    ingestion_benchmark_parser = subparsers.add_parser(
+        "benchmark-ingestion",
+        help=(
+            "Benchmark hybrid page routing against a canonical parser "
+            "artifact without writing Chroma."
+        ),
+    )
+    ingestion_benchmark_parser.add_argument(
+        "--file",
+        required=True,
+        help="PDF filename or relative source path.",
+    )
+    ingestion_benchmark_parser.add_argument(
+        "--live-docling",
+        action="store_true",
+        help=(
+            "Also run a fresh full-Docling parse for a same-run timing "
+            "baseline."
+        ),
+    )
+    ingestion_benchmark_parser.add_argument(
+        "--pages",
+        default=None,
+        metavar="FIRST-LAST",
+        help=(
+            "Benchmark an inclusive page-range sample while remapping the "
+            "canonical baseline; for example, 35-70."
+        ),
+    )
+    ingestion_benchmark_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("benchmark_results") / "ingestion",
+        help="Benchmark artifact/report directory.",
     )
 
     subparsers.add_parser("chat", help="Start interactive CLI chat.")
@@ -1435,6 +1712,17 @@ def main() -> int:
                 reprocess_visuals=args.reprocess_visuals,
                 backend=selected_parser,
             )
+        elif args.command == "visuals":
+            if args.status and args.refresh:
+                raise ValueError(
+                    "--status and --refresh cannot be used together"
+                )
+            run_visual_backfill(
+                settings,
+                only_file=args.file,
+                refresh=args.refresh,
+                status_only=args.status,
+            )
         elif args.command == "inspect-elements":
             import json
 
@@ -1450,6 +1738,14 @@ def main() -> int:
                 real_samples=args.real_samples,
                 provider=args.provider,
                 model_name=args.model,
+            )
+        elif args.command == "benchmark-ingestion":
+            run_ingestion_benchmark_cli(
+                settings,
+                args.file,
+                output_dir=args.output_dir,
+                live_docling=args.live_docling,
+                page_range=args.pages,
             )
         else:
             embedder = get_embedder(settings)

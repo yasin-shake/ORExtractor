@@ -97,6 +97,33 @@ def test_manifest_invalidation_on_pipeline_version(tmp_path):
     assert should_skip_pdf(entry4, pdf, settings) is False
 
 
+def test_manifest_with_failed_or_pending_visuals_is_not_complete(tmp_path):
+    pdf = tmp_path / "resume.pdf"
+    pdf.write_bytes(b"%PDF resumable visuals")
+    settings = _Settings()
+    entry = build_manifest_entry(
+        pdf,
+        settings,
+        element_count=3,
+        visual_count=3,
+        table_count=0,
+        indexed_chunk_count=3,
+        failed_element_ids=["figure-failed"],
+        parser_result=ParserResult(
+            source_file=pdf.name,
+            parser="docling",
+            parser_version="test",
+            quality=ParserQualityReport(score=1.0),
+        ),
+    )
+
+    assert should_skip_pdf(entry, pdf, settings) is False
+
+    entry["failed_element_ids"] = []
+    entry["pending_element_ids"] = ["figure-deferred"]
+    assert should_skip_pdf(entry, pdf, settings) is False
+
+
 def test_text_only_manifest_is_resumable_in_text_only_mode(tmp_path):
     pdf = tmp_path / "text-only.pdf"
     pdf.write_bytes(b"%PDF text only")

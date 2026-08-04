@@ -161,6 +161,7 @@ class IngestionPipeline:
         enable_visuals: bool = True,
         partition_only: bool = False,
         runtime: IngestionRuntime | None = None,
+        initialize_parser: bool = True,
     ):
         self.settings = copy(settings)
         self.runtime = runtime
@@ -198,7 +199,11 @@ class IngestionPipeline:
                 )
             if text_first_mode != "configured":
                 self.settings.docling_table_mode = text_first_mode
-        self.parser_router = get_parser_router(self.settings)
+        self.parser_router = (
+            get_parser_router(self.settings)
+            if initialize_parser
+            else None
+        )
         configure_langsmith(self.settings)
 
     def ingest_all(
@@ -322,6 +327,7 @@ class IngestionPipeline:
                     table_count=report_stats.tables,
                     indexed_chunk_count=report_stats.indexed_chunks,
                     failed_element_ids=report_stats.failed_elements,
+                    pending_element_ids=report_stats.pending_elements,
                     visual_enrichment_enabled=self.enable_visuals,
                     parser_result=work.parser_result,
                 )
@@ -597,6 +603,10 @@ class IngestionPipeline:
         artifact_dir: Path,
         tracing: bool,
     ) -> _ReportWork:
+        if self.parser_router is None:
+            raise RuntimeError(
+                "This ingestion pipeline was created without a parser"
+            )
         work = _ReportWork(
             pdf_path=pdf_path,
             source_file=source_file,
@@ -1025,6 +1035,9 @@ class IngestionPipeline:
                 + work.reconstruction_warning_count
             ),
             failed_elements=failed,
+            pending_elements=list(
+                enrich_stats.get("deferred_element_ids", [])
+            ),
             indexed_chunks=indexed,
             primary_parser=str(
                 work.parser_result.metadata.get(
@@ -1131,6 +1144,10 @@ class IngestionPipeline:
         source_file: Optional[str] = None,
         artifact_dir: Optional[Path] = None,
     ) -> dict:
+        if self.parser_router is None:
+            raise RuntimeError(
+                "This ingestion pipeline was created without a parser"
+            )
         source_file = source_file or pdf_path.name
         parser_result = self.parser_router.parse(
             pdf_path,
